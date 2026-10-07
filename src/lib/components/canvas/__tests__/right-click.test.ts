@@ -105,8 +105,20 @@ describe('right-click select-to-open', () => {
     const surface = container.querySelector('.cv-surface')!;
     const el = container.querySelector(`[data-hit="node"][data-id="${node.id}"]`)!;
 
-    // fireEvent resolves to false when the handler called preventDefault().
-    expect(fireEvent.contextMenu(surface)).toBe(false);
-    expect(fireEvent.contextMenu(el)).toBe(false);
+    // Dispatched by hand rather than through `fireEvent.contextMenu`, whose
+    // return value in @testing-library/svelte is a promise that resolves
+    // after the Svelte flush, not the `!event.defaultPrevented` boolean the
+    // DOM library returns. `defaultPrevented` on the event itself is the
+    // fact under test, and it is synchronous: true only if the handler ran
+    // preventDefault during dispatch. `bubbles` mirrors the real event, so
+    // a menu on a node is still cancelled by the surface's handler.
+    const suppresses = (target: Element): boolean => {
+      const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+      target.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    };
+
+    expect(suppresses(surface)).toBe(true);
+    expect(suppresses(el)).toBe(true);
   });
 });
