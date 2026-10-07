@@ -51,21 +51,25 @@ jobs:
             # NSIS only -- the .exe is the installer we ship; skip the MSI
             # rather than building two Windows packages.
             args: "--bundles nsis"
-            bundles:
-              - src-tauri/target/release/bundle/nsis/*.exe
+            # upload-artifact's `path` input is a scalar, so the globs live
+            # in a newline-separated block string: a YAML list would make
+            # the template evaluate to a sequence and the runner rejects
+            # that ("A sequence was not expected").
+            bundles: |
+              src-tauri/target/release/bundle/nsis/*.exe
           - platform: macos-latest
             name: macos-universal
             # Universal binary: both Apple Silicon and Intel in one bundle.
             args: "--target universal-apple-darwin"
-            bundles:
-              - src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            bundles: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           - platform: ubuntu-latest
             name: linux
             args: ""
-            bundles:
-              - src-tauri/target/release/bundle/deb/*.deb
-              - src-tauri/target/release/bundle/rpm/*.rpm
-              - src-tauri/target/release/bundle/appimage/*.AppImage
+            bundles: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/rpm/*.rpm
+              src-tauri/target/release/bundle/appimage/*.AppImage
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     permissions:
@@ -110,16 +114,14 @@ jobs:
       # `bun x @tauri-apps/cli icon <source>` after any rebrand.
       - name: Build Tauri app
         env:
-          # Populate these repository secrets to code-sign/notarize the
-          # macOS and Windows builds -- see README "Signing, packaging and
-          # distribution". Left unset, the build still produces unsigned
-          # artifacts (fine for local testing, not for public distribution).
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # APPLE_* signing secrets are deliberately NOT wired in yet: a
+          # missing secret still defines the env var as an empty string,
+          # and Tauri then tries to `security import` an empty certificate
+          # into the macOS keychain, which fails the whole bundle. Add
+          # them back -- populated -- when code-signing is set up; see
+          # README "Signing, packaging and distribution". Until then the
+          # build ships unsigned artifacts (fine for testing, not for
+          # public distribution).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bunx tauri build ${{ matrix.args }}
