@@ -12,6 +12,16 @@ pub mod sysdesign;
 pub mod util;
 pub mod vendors;
 
+// The Rust half of the shared IPC contract suite (`contract/ipc-golden.json`
+// is the golden fixture; the frontend's vitest suite checks the TS side
+// against the same bytes). WHY: it pins every command name, argument key
+// set and payload key set of all 35 handlers, so a wire rename or a gained/
+// dropped field fails `cargo test` here instead of surfacing as an opaque
+// serde error (or a silently stale frontend) at runtime. Test-only, so it
+// never links into the shipped app.
+#[cfg(test)]
+mod contract_tests;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

@@ -200,4 +200,63 @@ mod tests {
     fn running_defaults_to_true() {
         assert!(SimulationState::default().is_running());
     }
+
+    /// WHY: the two emit channels and the tick-error payload are the only
+    /// Rust-EMITTED strings the frontend parses blind (`listen()` on one
+    /// side, `emit()` on the other); a rename on either side silently stops
+    /// snapshots or error banners arriving. The event constants, the payload
+    /// name they carry, and the payload's own key set are pinned here against
+    /// the SAME golden fixture the vitest suite checks, and the literal
+    /// message the tick thread sends is compared against it too -- state.rs
+    /// is this module's own source file, so the check cannot rot silently.
+    #[test]
+    fn emitted_event_channels_and_tick_error_payload_match_the_shared_fixture() {
+        const GOLDEN: &str = include_str!("../../contract/ipc-golden.json");
+        let g: serde_json::Value =
+            serde_json::from_str(GOLDEN).expect("contract/ipc-golden.json must parse");
+
+        // The fixture's `events` map is keyed by channel; both constants
+        // must be present, with exactly the payload names the frontend
+        // deserializes from them.
+        let snap = &g["events"][SNAPSHOT_EVENT];
+        assert_eq!(
+            snap,
+            &serde_json::json!(["simSnapshot"]),
+            "{SNAPSHOT_EVENT} must carry exactly the simSnapshot payload"
+        );
+        let tick = &g["events"][TICK_ERROR_EVENT];
+        assert_eq!(
+            tick,
+            &serde_json::json!(["tickError"]),
+            "{TICK_ERROR_EVENT} must carry exactly the tickError payload"
+        );
+
+        // The payload struct itself: `{ message }` and nothing else. Built
+        // from the fixture's message, so an added/renamed struct field (or a
+        // fixture key) breaks the equality below.
+        let fixture_message = g["payloads"]["tickError"]["message"]
+            .as_str()
+            .expect("payloads.tickError.message is a string");
+        let serialized = serde_json::to_value(TickErrorPayload {
+            message: fixture_message.to_string(),
+        })
+        .expect("TickErrorPayload serializes");
+        assert_eq!(
+            serialized, g["payloads"]["tickError"],
+            "TickErrorPayload must serialize to exactly the fixture shape"
+        );
+
+        // And the literal the tick thread actually sends is the fixture's
+        // message, not a drifted one: read this very source file and require
+        // the `message: "..."` literal to appear verbatim.
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/state.rs"),
+        )
+        .expect("state.rs must be readable");
+        let literal = format!("message: \"{fixture_message}\"");
+        assert!(
+            src.contains(&literal),
+            "state.rs must emit exactly the fixture's tick-error text ({literal})"
+        );
+    }
 }
