@@ -9,8 +9,13 @@
 use crate::error::{AppError, AppResult};
 use crate::sim::engine::Engine;
 use crate::sim::types::{FailureKind, FailureOpts, SimSnapshot, Topology};
-use crate::state::SimulationState;
-use tauri::{AppHandle, State};
+use crate::state::{SimulationState, SNAPSHOT_EVENT};
+use tauri::{AppHandle, Emitter, State};
+
+/// One debugger step, in simulated milliseconds. The same number the web
+/// app's `STEP_MS` is (App.tsx), so a step here and a step there move the
+/// clock by the same amount.
+const STEP_MS: f64 = 100.0;
 
 fn require_engine<T>(
     state: &State<'_, SimulationState>,
@@ -65,6 +70,34 @@ pub fn sim_clear_failure(state: State<'_, SimulationState>, node_id: String) -> 
 #[tauri::command]
 pub fn sim_reset(state: State<'_, SimulationState>) -> AppResult<()> {
     require_engine(&state, |e| e.reset())
+}
+
+/// Pause the tick thread, then advance the engine by exactly one step.
+///
+/// Stepping while the background tick thread is free-running would race it
+/// and make the delta non-deterministic, so a step ALWAYS pauses first --
+/// the same contract a debugger's step button has (web `App.tsx`
+/// `handleStep`, which does the same inline because its engine is in
+/// process). The flag is stored before the lock is taken, and the tick
+/// thread re-checks it *under* that lock (see `state.rs`), so nothing can
+/// advance after this call's own delta.
+///
+/// The fresh snapshot is emitted here rather than left to the tick
+/// thread's ~100ms cadence: the thread is now stopped, so without this
+/// push the step would be invisible until the next Play.
+#[tauri::command]
+pub fn sim_step(
+    app: AppHandle,
+    state: State<'_, SimulationState>,
+    delta_ms: Option<f64>,
+) -> AppResult<()> {
+    state.set_running(false);
+    let snapshot = require_engine(&state, |e| {
+        e.advance(delta_ms.unwrap_or(STEP_MS));
+        e.snapshot()
+    })?;
+    let _ = app.emit(SNAPSHOT_EVENT, snapshot);
+    Ok(())
 }
 
 #[tauri::command]
@@ -145,6 +178,22 @@ mod tests {
         assert_eq!(topology.edges.len(), 1);
         assert_eq!(topology.annotations.as_ref().map(Vec::len), Some(1));
         Engine::new(topology, 1);
+    }
+
+    /// `simStep()` sends `invoke('sim_step', { deltaMs })`, and the usual
+    /// call passes no `deltaMs` at all -- JSON drops the `undefined` key, so
+    /// the command must accept a MISSING parameter and fall back to
+    /// `STEP_MS`. A required `delta_ms` would reject every real call from
+    /// the UI with a deserialization error instead of stepping.
+    #[test]
+    fn sim_step_args_parse_with_and_without_a_delta() {
+        let omitted: Value = serde_json::from_str(r#"{}"#).unwrap();
+        let delta: Option<f64> = serde_json::from_value(omitted["deltaMs"].clone()).unwrap();
+        assert_eq!(delta, None);
+
+        let explicit: Value = serde_json::from_str(r#"{ "deltaMs": 250 }"#).unwrap();
+        let delta: Option<f64> = serde_json::from_value(explicit["deltaMs"].clone()).unwrap();
+        assert_eq!(delta, Some(250.0));
     }
 
     /// `NodeConfig`'s fleet-sizing fields are non-optional by design (see

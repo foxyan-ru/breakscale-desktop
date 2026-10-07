@@ -52,12 +52,21 @@
      double-click on a node opens a floating rename `<input>` modelled
      exactly on the pre-existing section-label editor below.
 
+     GROUP DRAG, ZOOM-TO-FIT, LABEL DE-CONFLICTION, RIGHT-CLICK. The four
+     canvas features of this pass, each ported from `Canvas.tsx`: dragging
+     one member of an ALREADY-SELECTED multi-selection now carries the
+     whole selection plus every selected annotation
+     (`groupDragTargets`/`sharedSnappedDelta` in pointer-input.ts and the
+     `groupDelta`/`groupOrigins` state below); the zoom cluster gained a
+     fit button, and the % badge became one, both wired to the same `fitTo`
+     the Shift+1 / Shift+2 chords call; coincident edge rate labels are
+     bucketed and staggered by `labelDyById` (edge-route.ts); and a right
+     press on a node selects it so the Inspector -- the app's side menu --
+     opens on it.
+
      See this file's closing comment block for the full, itemised list of
      what is still simplified relative to `Canvas.tsx` / `annotationLayout.ts`
-     (alt-drag-duplicate, Ctrl+D, undo/redo and zoom-to-fit remain out of
-     scope; group-drag-move of a multi-selection is also out of scope --
-     dragging one member of a multi-selection selects and moves only that
-     one node, same as a plain click would).
+     (alt-drag-duplicate, Ctrl+D and undo/redo remain out of scope).
      ========================================================================== */
 
   import { onMount } from 'svelte';
@@ -142,6 +151,8 @@
     MARK_RESERVE,
     clamp,
     snapTo,
+    // zoom-to-fit
+    fitViewTo,
     makeNode,
     newId,
     // visuals
@@ -158,6 +169,7 @@
     routeEdge,
     arrowPath,
     previewPath,
+    labelDyById,
   } from './geometry';
   import type { Readout } from './geometry';
   import { formatRate, healthOfLoad, toneClass } from './format';
@@ -183,6 +195,8 @@
     beginPinch,
     pinchFrame,
     endPointer,
+    groupDragTargets,
+    sharedSnappedDelta,
   } from './pointer-input';
   import type { PinchState, TouchMap } from './pointer-input';
 
@@ -242,6 +256,19 @@
 
   /** Live overlays for an in-progress drag -- committed to the store on release. */
   let dragOverlay = $state<{ id: string; x: number; y: number } | null>(null);
+  /**
+   * The other members of an in-progress NODE drag: where each started, and
+   * the shared delta every one of them translates by.
+   *
+   * The grabbed node is in NEITHER -- it keeps using `dragOverlay`, which
+   * the render path already special-cases. `groupDelta` is `$state` because
+   * `nodePos`/`sectionRect`/`notePos` read it while drawing; `groupOrigins`
+   * is a plain Map because only the drag-end commit reads it, and every
+   * read path checks `groupDelta` first. Both are cleared the same places
+   * `dragOverlay` is.
+   */
+  let groupOrigins: Map<string, { x: number; y: number }> | null = null;
+  let groupDelta = $state<{ dx: number; dy: number } | null>(null);
   let linkPreview = $state<{ from: string; x: number; y: number; over: string | null } | null>(
     null,
   );
@@ -376,7 +403,13 @@
   const detail = $derived<0 | 1 | 2>(
     view.k < MINIMAL_ZOOM ? 0 : view.k < DETAIL_ZOOM ? 1 : 2,
   );
-  const showEdgeLabels = $derived(detail === 2);
+  /**
+   * Rate labels appear at 1x and above -- `Canvas.tsx`'s own
+   * `const showEdgeLabels = view.k >= 1`, deliberately NOT the node detail
+   * budget (`detail === 2`, which starts at 0.7x): an 11px label needs the
+   * zoom to read it, while the numbers inside a node are sized by the node.
+   */
+  const showEdgeLabels = $derived(view.k >= 1);
 
   /** Per-node sparkline ring buffers, sampled once per incoming snapshot. */
   let sparkHistory = $state<Map<string, number[]>>(new Map());
@@ -448,6 +481,65 @@
     return settingsStore.snapToGrid ? snapTo(v, GRID) : Math.round(v);
   }
 
+  /**
+   * The `.stage-safe` sentinel's rect, clamped into the surface, or the
+   * surface itself when there is none.
+   *
+   * shell.css documents that invisible div as the UNCOVERED area (the part
+   * of the stage no library rail / inspector / metrics strip covers) and
+   * that the canvas measures it whenever it aims the camera -- but
+   * `+page.svelte` does not render it yet, and in a headless layout every
+   * rect is 0x0. Both cases fall back to the whole surface, which is also
+   * the all-panels-closed answer, so a fit never aims outside the element
+   * the transform is anchored to.
+   */
+  function visibleFrame(surface: { x: number; y: number; w: number; h: number }): {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } {
+    const sentinel = typeof document === 'undefined' ? null : document.querySelector('.stage-safe');
+    const r = sentinel?.getBoundingClientRect();
+    if (!r || r.width === 0 || r.height === 0) return surface;
+    const x = Math.max(r.left, surface.x);
+    const y = Math.max(r.top, surface.y);
+    const w = Math.min(r.right, surface.x + surface.w) - x;
+    const h = Math.min(r.bottom, surface.y + surface.h) - y;
+    return w <= 0 || h <= 0 ? surface : { x, y, w, h };
+  }
+
+  /**
+   * Fit a set of nodes into the viewport: the whole diagram for Shift+1 and
+   * the cluster's fit button, just the selection for Shift+2.
+   *
+   * The scale and the centring both use `visibleFrame`, so a fit with
+   * panels open frames the diagram inside the uncovered area; the returned
+   * offset is surface-relative, which is what the pan/zoom transform reads.
+   * The arithmetic is `geometry.ts`'s `fitViewTo` (a port of `Canvas.tsx`'s
+   * `fitTo`) so it can be unit tested without a DOM. Null means an empty
+   * diagram or an unmeasured viewport -- either way the camera stays where
+   * the student put it.
+   */
+  function fitTo(target: readonly SimNode[]): void {
+    const el = surfaceEl;
+    if (!el || target.length === 0) return;
+    const box = el.getBoundingClientRect();
+    const surface = { x: box.x, y: box.y, w: box.width, h: box.height };
+    const next = fitViewTo(
+      target.map((n) => ({ x: n.x, y: n.y, w: NODE_W, h: NODE_H })),
+      surface,
+      visibleFrame(surface),
+    );
+    if (!next) return;
+    view = { k: next.k, x: next.x, y: next.y };
+  }
+
+  /** Shift+1 and the cluster's fit button. */
+  function fitToContent(): void {
+    fitTo(nodes);
+  }
+
   onMount(() => {
     const el = surfaceEl;
     if (!el) return;
@@ -489,6 +581,35 @@
     topologyStore.topology = nextTopology;
     simSetTopology(nextTopology).catch((e) =>
       pushError(`Updating annotations failed to reach the simulation engine: ${describeErr(e)}`),
+    );
+  }
+
+  /**
+   * Drag-end commit for a group of nodes: ONE topology edit and ONE
+   * `simSetTopology`.
+   *
+   * The solo case keeps using `moveNode` (already a whole-topology push),
+   * but calling it N times in a row for an N-member selection would push
+   * the topology N times back to back with a different number of moved
+   * nodes each time. This mirrors `commitAnnotations`' own pattern --
+   * optimistic local update, then fire-and-forget sync into `pushError` --
+   * so the engine is never sent a half-moved selection.
+   */
+  function commitNodeMoves(moves: readonly { id: string; x: number; y: number }[]): void {
+    if (moves.length === 0) return;
+    const byId = new Map(moves.map((m) => [m.id, m]));
+    const nextTopology = {
+      ...topologyStore.topology,
+      nodes: topologyStore.topology.nodes.map((n) => {
+        const m = byId.get(n.id);
+        return m ? { ...n, x: m.x, y: m.y } : n;
+      }),
+    };
+    topologyStore.topology = nextTopology;
+    simSetTopology(nextTopology).catch((e) =>
+      pushError(
+        `Moving the selection failed to reach the simulation engine: ${describeErr(e)}`,
+      ),
     );
   }
 
@@ -668,6 +789,21 @@
 
   function onSurfacePointerDown(e: PointerEvent): void {
     if (isChrome(e.target)) return;
+    // RIGHT MOUSE PRESS = select the node under the cursor so the Inspector
+    // opens on it: the Inspector IS this app's side menu (+page.svelte keys
+    // its `has-inspector` class off `selectedNodeId`). Gated on `mouse` so a
+    // pen's barrel button (also button 2) stays inert, exactly as
+    // pressAction's own doc comment promises. No gesture is started, and a
+    // node already in the selection is left alone so a right-press can
+    // never collapse a multi-selection. Background right-press changes no
+    // selection at all.
+    if (e.pointerType === 'mouse' && e.button === 2) {
+      const hit = hitTest(e.target);
+      if (hit.kind === 'node' && hit.id && !topologyStore.selectedIds.has(hit.id)) {
+        selectOne(hit.id, false);
+      }
+      return;
+    }
     const action = pressAction(e.button, e.pointerType);
     if (action === 'none') return;
 
@@ -727,10 +863,38 @@
         p.grabDx = p.worldX - node.x;
         p.grabDy = p.worldY - node.y;
         dragOverlay = { id: node.id, x: node.x, y: node.y };
-        // Grabbing a node always drags (and selects) only that one node --
-        // group-drag-move of a multi-selection is out of scope, see this
-        // file's header comment.
-        selectOne(node.id, false);
+        // Press on an ALREADY-SELECTED member of a multi-selection drags
+        // the WHOLE selection -- the other selected nodes plus every
+        // selected annotation, so a marquee'd cluster moves as one object
+        // whichever member was grabbed (`groupDragTargets`, ported from
+        // `Canvas.tsx`'s own `sel.has(id) && sel.size > 1` test). Anything
+        // else selects and moves only this node, exactly as a plain click
+        // would.
+        let origins: Map<string, { x: number; y: number }> | null = null;
+        const group = groupDragTargets(
+          node.id,
+          topologyStore.selectedIds,
+          nodes.map((n) => n.id),
+          annotations.map((a) => a.id),
+        );
+        if (group) {
+          const found = new Map<string, { x: number; y: number }>();
+          for (const id of group.nodes) {
+            const n = nodeById.get(id);
+            if (n) found.set(id, { x: n.x, y: n.y });
+          }
+          for (const id of group.annotations) {
+            const a = annotationById.get(id);
+            if (a) found.set(id, { x: a.x, y: a.y });
+          }
+          origins = found.size > 0 ? found : null;
+        }
+        if (origins) {
+          groupOrigins = origins;
+          groupDelta = { dx: 0, dy: 0 };
+        } else {
+          selectOne(node.id, false);
+        }
         break;
       }
       case 'port-out': {
@@ -808,6 +972,17 @@
         const nx = snapIf(world.x - p.grabDx);
         const ny = snapIf(world.y - p.grabDy);
         dragOverlay = { id: dragOverlay.id, x: nx, y: ny };
+        // Every OTHER member of a promoted group translates by this same
+        // delta. Both terms go through `snapIf` before the subtraction so
+        // the grabbed node's snapped position and the members' shared delta
+        // are rounded identically -- the selection keeps its exact shape on
+        // the grid instead of each member snapping independently.
+        if (groupOrigins && groupDelta) {
+          groupDelta = {
+            dx: sharedSnappedDelta(world.x - p.grabDx, p.worldX - p.grabDx, snapIf),
+            dy: sharedSnappedDelta(world.y - p.grabDy, p.worldY - p.grabDy, snapIf),
+          };
+        }
         break;
       }
       case 'link': {
@@ -918,10 +1093,40 @@
   function finishDrag(p: PendingGesture): void {
     isPanning = false;
     switch (p.mode) {
-      case 'node':
-        if (dragOverlay) moveNode(dragOverlay.id, dragOverlay.x, dragOverlay.y);
+      case 'node': {
+        const moved = dragOverlay;
+        const origins = groupOrigins;
+        const delta = groupDelta;
+        if (moved && origins && delta) {
+          const nodeMoves: { id: string; x: number; y: number }[] = [
+            { id: moved.id, x: moved.x, y: moved.y },
+          ];
+          const annMoves = new Map<string, { x: number; y: number }>();
+          for (const [id, o] of origins) {
+            const to = { x: o.x + delta.dx, y: o.y + delta.dy };
+            if (nodeById.has(id)) nodeMoves.push({ id, x: to.x, y: to.y });
+            else annMoves.set(id, to);
+          }
+          // Annotations are committed FIRST: `commitAnnotations` rewrites
+          // the topology wholesale, so the node batch has to be built from
+          // the store AFTER that write or one would drop the other's field.
+          if (annMoves.size > 0) {
+            commitAnnotations(
+              annotations.map((a) => {
+                const m = annMoves.get(a.id);
+                return m ? { ...a, x: m.x, y: m.y } : a;
+              }),
+            );
+          }
+          commitNodeMoves(nodeMoves);
+        } else if (moved) {
+          moveNode(moved.id, moved.x, moved.y);
+        }
+        groupOrigins = null;
+        groupDelta = null;
         dragOverlay = null;
         break;
+      }
       case 'link':
         if (linkPreview?.over) {
           addEdge({ id: newId('edge'), from: linkPreview.from, to: linkPreview.over, weight: 1 });
@@ -1076,12 +1281,24 @@
     pending = null;
     isPanning = false;
     dragOverlay = null;
+    groupOrigins = null;
+    groupDelta = null;
     linkPreview = null;
     annMoveOverlay = null;
     annResizeOverlay = null;
     noteResizeOverlay = null;
     drawSectionOverlay = null;
     marqueeOverlay = null;
+  }
+
+  /**
+   * Suppress the browser's own context menu over the diagram: the press
+   * that opened it already did this app's work (a right-press selects the
+   * node so the Inspector opens), and a native menu on top of a design tool
+   * only offers page-level actions that make no sense here.
+   */
+  function onSurfaceContextMenu(e: MouseEvent): void {
+    e.preventDefault();
   }
 
   function onSurfaceDblClick(e: MouseEvent): void {
@@ -1106,6 +1323,8 @@
     pending = null;
     isPanning = false;
     dragOverlay = null;
+    groupOrigins = null;
+    groupDelta = null;
     linkPreview = null;
     annMoveOverlay = null;
     annResizeOverlay = null;
@@ -1137,6 +1356,23 @@
           e.preventDefault();
           pendingLinkFrom = null;
           tool = tool === 'section' ? null : 'section';
+          return;
+        }
+        // Shift+1 fits everything, Shift+2 the selection: the pair every
+        // canvas app ships, and already promised by Shortcuts.svelte's
+        // View list. Positional codes, because Shift+1 is "!" only on some
+        // layouts. Shift+2 with nothing selected is deliberately NOT
+        // consumed, so it stays the browser's own shortcut.
+        if (e.shiftKey && e.code === 'Digit1') {
+          e.preventDefault();
+          fitToContent();
+          return;
+        }
+        if (e.shiftKey && e.code === 'Digit2') {
+          const sel = nodes.filter((n) => topologyStore.selectedIds.has(n.id));
+          if (sel.length === 0) return;
+          e.preventDefault();
+          fitTo(sel);
           return;
         }
       }
@@ -1363,6 +1599,11 @@
 
   function nodePos(n: SimNode): { x: number; y: number } {
     if (dragOverlay && dragOverlay.id === n.id) return { x: dragOverlay.x, y: dragOverlay.y };
+    // A group member of the drag in progress follows the shared delta; the
+    // grabbed node is handled by the overlay above and is never in origins.
+    const g = groupDelta;
+    const o = groupOrigins?.get(n.id);
+    if (g && o) return { x: o.x + g.dx, y: o.y + g.dy };
     return { x: n.x, y: n.y };
   }
 
@@ -1371,12 +1612,18 @@
     if (annMoveOverlay && annMoveOverlay.id === s.id) {
       return { x: s.x + annMoveOverlay.dx, y: s.y + annMoveOverlay.dy, w: s.width, h: s.height };
     }
+    const g = groupDelta;
+    const sec = groupOrigins?.get(s.id);
+    if (g && sec) return { x: sec.x + g.dx, y: sec.y + g.dy, w: s.width, h: s.height };
     return { x: s.x, y: s.y, w: s.width, h: s.height };
   }
 
   function notePos(n: Note): { x: number; y: number } {
     if (noteResizeOverlay && noteResizeOverlay.id === n.id) return { x: noteResizeOverlay.x, y: n.y };
     if (annMoveOverlay && annMoveOverlay.id === n.id) return { x: n.x + annMoveOverlay.dx, y: n.y + annMoveOverlay.dy };
+    const g = groupDelta;
+    const origin = groupOrigins?.get(n.id);
+    if (g && origin) return { x: origin.x + g.dx, y: origin.y + g.dy };
     return { x: n.x, y: n.y };
   }
 
@@ -1405,6 +1652,32 @@
   function edgeWidth(f: number): number {
     return f <= 0 ? 1 : clamp(1 + Math.log10(1 + f) * 0.85, 1, 4.5);
   }
+
+  /**
+   * Vertical offsets that keep coincident edge rate labels apart, keyed by
+   * edge id -- `labelDyById` (edge-route.ts), a port of `Canvas.tsx`'s own
+   * derivation. Fed from the SAME rects, lane and live snapshot the
+   * template draws with, so the bucketed anchor is the exact point each
+   * label renders at; entries are supplied in edge order, the order the
+   * stagger itself is assigned in. Empty whenever `showEdgeLabels` is off.
+   */
+  const edgeLabelDy = $derived.by(() =>
+    labelDyById(
+      edges.map((edge) => {
+        const state = snapshot?.edgeState[edge.id] ?? 'idle';
+        return {
+          id: edge.id,
+          a: edgeRect(edge.from),
+          b: edgeRect(edge.to),
+          lane: laneFor(edge),
+          control: Boolean(edge.control),
+          severed: state === 'cut' || state === 'blocked',
+          flow: snapshot?.edgeFlow[edge.id] ?? 0,
+        };
+      }),
+      showEdgeLabels,
+    ),
+  );
 
   /* ------------------------------------------------------------------ *
    * Node label / cell text fitting (mirrors Canvas.tsx's budget maths).
@@ -1525,6 +1798,7 @@
     onpointerup={onSurfacePointerUp}
     onpointercancel={onSurfacePointerCancel}
     ondblclick={onSurfaceDblClick}
+    oncontextmenu={onSurfaceContextMenu}
     ondragover={onDragOver}
     ondrop={onDrop}
   >
@@ -1577,6 +1851,7 @@
             {@const targetReadout = targetNode && targetStats ? readoutFor(targetNode.kind, targetStats, targetNode.config, backlogs.get(targetNode.id) ?? 0) : null}
             {@const targetHealth = targetReadout?.health ?? 'ok'}
             {@const selected = topologyStore.selectedIds.has(edge.id)}
+            {@const labelDy = edgeLabelDy.get(edge.id) ?? 0}
             <g
               class="cv-edge is-{severed || control ? 'ok' : targetHealth} is-state-{state}"
               class:is-selected={selected}
@@ -1600,10 +1875,10 @@
                 </g>
               {/if}
               {#if showEdgeLabels && control}
-                <text class="cv-edge-label is-control" x={route.label.x} y={route.label.y - 6}>scales</text>
+                <text class="cv-edge-label is-control" x={route.label.x} y={route.label.y - 6 + labelDy}>scales</text>
               {/if}
               {#if showEdgeLabels && active}
-                <text class="cv-edge-label" x={route.label.x} y={route.label.y - 6}>{formatRate(flow)}</text>
+                <text class="cv-edge-label" x={route.label.x} y={route.label.y - 6 + labelDy}>{formatRate(flow)}</text>
               {/if}
               {#if selected}
                 <g class="cv-edge-del" transform="translate({route.label.x},{route.label.y})" data-hit="edge-delete" data-id={edge.id} role="button" aria-label="Delete connection">
@@ -1986,7 +2261,13 @@
   <!-- The zoom cluster. The % badge used to live alone at the bottom LEFT,
        where shell.css could not lift it (it only lifts .cv-ledger/.cv-zoom),
        so the metrics strip covered it; moving it inside the cluster puts
-       every zoom affordance where shell.css's offsets already aim. -->
+       every zoom affordance where shell.css's offsets already aim.
+       The % is now a BUTTON and a labelled fit icon sits beside it, both
+       for the same reason the web app gave: somebody who had panned into
+       empty space had no visible way back, and the honest answer was a
+       keyboard shortcut they had not been told about. Clicking the number
+       keeps working because someone who learned to click it should be
+       right. -->
   <div class="cv-zoom" data-chrome="zoom">
     <button
       type="button"
@@ -1996,7 +2277,11 @@
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14" /></svg>
     </button>
-    <span class="cv-zoom-level">{Math.round(view.k * 100)}%</span>
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm cv-zoom-level"
+      aria-label={`Zoom ${Math.round(view.k * 100)} percent. Fit the diagram on screen`}
+      onclick={fitToContent}>{Math.round(view.k * 100)}%</button>
     <button
       type="button"
       class="btn btn-ghost btn-sm"
@@ -2004,6 +2289,14 @@
       onclick={() => zoomBy(ZOOM_STEP)}
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm"
+      aria-label="Fit the diagram on screen"
+      onclick={fitToContent}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4" /></svg>
     </button>
   </div>
 </div>
@@ -2027,14 +2320,19 @@
          clipboard's own `cloneSubgraph`/`freshId`, `$lib/domain/clipboard.ts`,
          are written generically enough that a future Ctrl+D could reuse
          them unchanged).
-       - Dragging one member of a multi-selection selects and moves ONLY
-         that node, same as a plain click would -- group-drag-move of a
-         whole multi-selection (`Canvas.tsx`'s own behaviour) is not
-         implemented. Not confirmed out of scope by name, but outside the
-         four features this pass targeted; a future pass wiring it would
-         touch `promote()`'s `'node'`/`'section'`/`'note'` cases.
-       - Undo/redo and zoom-to-fit are NOT implemented (confirmed out of
-         scope; see the RENDERING section below for the zoom-to-fit note).
+        - Group-drag-move of a multi-selection IS implemented for NODES:
+          pressing an already-selected member drags the other selected
+          nodes plus every selected annotation together
+          (`promote()`'s `'node'` case). Pressing a note or a section
+          still selects and moves only that annotation -- the web app
+          promotes an annotation press into a group too, and wiring that
+          would touch `promote()`'s `'section'`/`'note'` cases.
+        - Undo/redo is NOT implemented (confirmed out of scope).
+        - Zoom-to-fit IS implemented: the cluster's fit button and the %
+          button beside it, plus Shift+1 (everything) / Shift+2 (the
+          selection), matching what Shortcuts.svelte's View list already
+          documents. Ctrl+= / Ctrl+- / Ctrl+0 remain unimplemented even
+          though that same dialog lists them.
 
      PALETTE-DROPPED NODE DEFAULTS
        - A node dropped from the palette gets one generic `NodeConfig`
@@ -2046,9 +2344,11 @@
          realistically; it will not crash or misrender in the meantime.
 
      EDGE LABELS
-       - Overlapping rate labels at a symmetric fan-out are not
-         de-conflicted (the original bucketed and staggered colliding
-         label anchors; this port always draws at `labelDy = 0`).
+       - Colliding rate labels ARE de-conflicted: `labelDyById`
+         (edge-route.ts) buckets anchors on a 16px grid and staggers the
+         second and later label landing in a bucket 10px further down,
+         exactly as `Canvas.tsx` did. The break mark and delete button keep
+         the un-staggered anchor, so a label's box can overlap them.
 
      ANNOTATIONS (vs. annotationLayout.ts / Canvas.tsx's annotation chrome)
        - Section resize supports all 8 compass handles (the pure
@@ -2094,10 +2394,15 @@
          Rust with no equivalent exposed to the frontend. See the doc
          comment on `BACKLOG_CONSUMER_KINDS`/`BACKLOG_BUFFER_KINDS` in
          geometry.ts.
-       - Zoom auto-fit-to-content (the web app's "Fit" button/shortcut) is
-         not implemented; the view starts at a fixed `{x:40,y:40,k:1}` and
-         is otherwise only moved by the user (pan/zoom/pinch) or the
-         Minimap's `ongoto`.
+        - Zoom fit (`fitTo`/`fitToContent`, Shift+1 / Shift+2 / the cluster
+          buttons) is implemented, but it measures NODES only -- exactly as
+          the web app's `fitTo(nodes)` does, so a note or section outside
+          the node bounding box can still be framed off screen. It also
+          frames the `.stage-safe` sentinel when that div exists
+          (`visibleFrame`), which `+page.svelte` does not render yet; with
+          no sentinel the whole surface is used. The view still starts at a
+          fixed `{x:40,y:40,k:1}` and is otherwise only moved by the user
+          (pan/zoom/pinch), the Minimap's `ongoto`, or a fit.
        - Background grid lines (app.css's `--grid-line`/`--grid-major`
          tokens) are painted via a CSS `background-image` on `.cv-surface`
        in Canvas.css rather than as SVG rules; visually equivalent, cheaper

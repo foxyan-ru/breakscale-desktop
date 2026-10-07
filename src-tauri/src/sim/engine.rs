@@ -2855,6 +2855,21 @@ impl Engine {
                 n.config.shard_capacity = *cap;
             }
         }
+        // Drop every node's runtime state instead of carrying it into the
+        // new run. `build_nodes()` reuses a previous `NodeState` whenever
+        // the kind matches -- which is exactly what preserves in-flight
+        // work across a LIVE topology edit -- but across a reset that reuse
+        // is wrong: the clock is back at 0, so busy slots, waiting queues,
+        // the per-node rate counters, the latency ring, autoscaler
+        // warm-up (`instance_*`) and behaviour-private `ext` scratch all
+        // belong to a run that is over, and they made a reset run differ
+        // from the first one (reset's whole contract is reproducing the
+        // original trajectory from t=0). The web engine sidesteps this by
+        // calling `buildNodes(null)` from `reset()` (engine.ts:1054),
+        // which turns the reuse path off for exactly this call; clearing
+        // `self.nodes` here is the same switch. `out`/`ctrl`/`sources` are
+        // rebuilt from the topology a few lines below either way.
+        self.nodes.clear();
         self.build_nodes();
     }
 
@@ -3399,4 +3414,86 @@ fn describe_fault(node_id: &str, f: &Fault) -> ActiveFailure {
         FailureKind::Crash => {}
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::presets::boot_topology;
+
+    /// Reset must leave NOTHING of the run that just finished behind.
+    ///
+    /// `build_nodes()` reuses a previous `NodeState` whenever the node's
+    /// kind is unchanged -- the mechanism that preserves in-flight work
+    /// across a LIVE topology edit -- and `reset()` was feeding it the
+    /// states it had just unwound the clock past: busy slots, waiting
+    /// queues, lifetime counters, rate windows, latency rings, autoscaler
+    /// warm-up and behaviour-private `ext` scratch all carried over. The
+    /// fix clears `self.nodes` first (the desktop equivalent of the web
+    /// engine's `buildNodes(null)` call at engine.ts:1054), which is what
+    /// this pins: after `reset()`, every node is as fresh as one built at
+    /// t=0.
+    #[test]
+    fn reset_zeroes_every_nodes_runtime_state() {
+        let mut engine = Engine::new(boot_topology(), 1);
+        engine.advance(3_000.0);
+
+        // Guard against the assertion below passing vacuously: the boot
+        // topology has to have actually done some work first.
+        let worked = engine.nodes.values().any(|n| {
+            n.total_completed > 0.0 || n.total_failed > 0.0 || n.busy > 0.0 || !n.waiting.is_empty()
+        });
+        assert!(worked, "boot topology ran for 3s without touching a request");
+
+        engine.reset();
+
+        assert_eq!(engine.now, 0.0, "the clock must rewind to zero");
+        assert_eq!(
+            engine.nodes.len(),
+            engine.topology.nodes.len(),
+            "reset must rebuild state for every node in the topology"
+        );
+        for (id, state) in &engine.nodes {
+            assert_eq!(state.total_completed, 0.0, "lifetime completions survived for {id}");
+            assert_eq!(state.total_failed, 0.0, "lifetime failures survived for {id}");
+            assert_eq!(state.busy, 0.0, "busy slots survived for {id}");
+            assert!(state.waiting.is_empty(), "waiting queue survived for {id}");
+        }
+    }
+
+    /// The user-visible half of the same contract: with the clock, RNG,
+    /// heap and node state all rewound, the same advance must reproduce
+    /// the same work node-for-node (AGENTS.md: "same seed and topology
+    /// means byte-identical snapshots").
+    ///
+    /// This is the behaviour Reset is FOR -- replaying a scenario to see
+    /// the same answer -- and carrying node state across the reset broke
+    /// it: the second run started from the end of the first, so its
+    /// numbers differed and only a page reload reproduced them.
+    #[test]
+    fn a_reset_run_repeats_the_first_run() {
+        let mut engine = Engine::new(boot_topology(), 7);
+        engine.advance(2_000.0);
+
+        let first: HashMap<String, f64> = engine
+            .nodes
+            .iter()
+            .map(|(id, state)| (id.clone(), state.total_completed))
+            .collect();
+        assert!(
+            first.values().any(|v| *v > 0.0),
+            "boot topology ran for 2s without completing anything"
+        );
+
+        engine.reset();
+        engine.advance(2_000.0);
+
+        for (id, state) in &engine.nodes {
+            let expected = first.get(id).copied().unwrap_or(f64::NAN);
+            assert_eq!(
+                state.total_completed, expected,
+                "node {id} did different work after reset"
+            );
+        }
+    }
 }

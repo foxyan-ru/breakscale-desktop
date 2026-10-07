@@ -24,6 +24,9 @@ import {
 } from './format';
 import type { Health } from './format';
 import { KIND_NAME } from './node-visuals';
+// The `Rect` re-export below (`export type { ... } from './edge-route'`) does
+// not bind a local name, so `fitViewTo`'s signature needs its own import.
+import type { Rect } from './edge-route';
 
 export {
   ICON_BOX,
@@ -51,6 +54,7 @@ export {
   EDGE_STUB,
   LANE_OFFSET,
   arrowPath,
+  labelDyById,
   previewPath,
   roundedPath,
   routeEdge,
@@ -184,6 +188,58 @@ export function fitMarginFor(viewWidth: number): number {
 }
 export const FIT_MIN = DETAIL_ZOOM;
 export const FIT_MAX = 1.5;
+
+/**
+ * Camera that frames `boxes` inside `visible`, expressed relative to
+ * `surface` (the element the pan/zoom transform is anchored to).
+ *
+ * Field-for-field port of the web app's `fitTo` (`Canvas.tsx`): the scale
+ * and the centring both use the VISIBLE rect, so a fit with panels open
+ * frames the diagram inside the uncovered area and never parks a node under
+ * an opaque panel, while the returned offset stays surface-relative because
+ * that is what `transform: translate(x,y) scale(k)` reads. `visible`
+ * defaults to `surface`, which is the all-panels-closed case.
+ *
+ * The scale is rounded to 3 decimals before the clamp, exactly as a zoom
+ * step does, so a fit and a keyboard zoom can never report two spellings of
+ * the same percentage. Returns null for an empty diagram or a zero-size
+ * viewport (which is what an unmeasured layout looks like in a headless
+ * test environment) and the caller leaves the camera alone.
+ */
+export function fitViewTo(
+  boxes: readonly Rect[],
+  surface: Rect,
+  visible: Rect = surface,
+): { x: number; y: number; k: number } | null {
+  if (boxes.length === 0) return null;
+  if (visible.w === 0 || visible.h === 0) return null;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const b of boxes) {
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.w > maxX) maxX = b.x + b.w;
+    if (b.y + b.h > maxY) maxY = b.y + b.h;
+  }
+  const bw = Math.max(1, maxX - minX);
+  const bh = Math.max(1, maxY - minY);
+  const margin = fitMarginFor(visible.w);
+  const k = clamp(
+    Math.round(
+      Math.min((visible.w - margin * 2) / bw, (visible.h - margin * 2) / bh) * 1000,
+    ) / 1000,
+    FIT_MIN,
+    FIT_MAX,
+  );
+  return {
+    k,
+    x: visible.x - surface.x + (visible.w - bw * k) / 2 - minX * k,
+    y: visible.y - surface.y + (visible.h - bh * k) / 2 - minY * k,
+  };
+}
 
 /** Glyph geometry: see the web app's Canvas.tsx for the measured derivation. */
 export const GLYPH_PX = 18;

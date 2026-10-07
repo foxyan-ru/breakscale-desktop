@@ -40,6 +40,7 @@ pub fn run() {
             commands::sim::sim_inject_failure,
             commands::sim::sim_clear_failure,
             commands::sim::sim_reset,
+            commands::sim::sim_step,
             commands::sim::sim_set_running,
             commands::sim::sim_get_snapshot,
             // designs / design file

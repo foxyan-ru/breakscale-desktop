@@ -322,3 +322,54 @@ export function previewPath(a: Rect, px: number, py: number): string {
     EDGE_RADIUS,
   );
 }
+
+/** Everything `labelDyById` needs to know about one edge's rate label. */
+export interface LabelDyEntry {
+  id: string;
+  a: Rect | null;
+  b: Rect | null;
+  lane: number;
+  control: boolean;
+  severed: boolean;
+  flow: number;
+}
+
+/**
+ * Vertical offsets that keep coincident edge rate labels apart, keyed by
+ * edge id.
+ *
+ * Field-for-field port of `Canvas.tsx`'s `labelDyById`: two edges whose
+ * midpoints coincide (a fan-out to two targets symmetric around the source
+ * row anchors BOTH labels at the identical point) are bucketed on a 16px
+ * grid and the nth label landing in an occupied bucket is pushed 10px
+ * further down. Measured in the web app: three such pairs in one topology
+ * rendered "3k/3k/s" garble.
+ *
+ * Only edges that will actually RENDER a label participate -- the mirror of
+ * EdgeView's own condition -- so an idle or severed edge never displaces a
+ * live one, and `showLabels` being false skips the whole pass. Each entry
+ * is routed through `routeEdge` with the same rects and lane the template
+ * draws with, so the bucketed anchor is the exact point the label renders
+ * at. Entries must be supplied in edge order: the stagger is assigned in
+ * the same sequence the wires are drawn.
+ */
+export function labelDyById(
+  entries: readonly LabelDyEntry[],
+  showLabels: boolean,
+): Map<string, number> {
+  const m = new Map<string, number>();
+  if (!showLabels) return m;
+  const buckets = new Map<string, number>();
+  for (const e of entries) {
+    if (!e.a || !e.b) continue;
+    // Mirror of the template's "does a label render" condition.
+    const hasLabel = e.control || (!e.severed && e.flow > 0.05);
+    if (!hasLabel) continue;
+    const { label } = routeEdge(e.a, e.b, e.lane);
+    const key = `${Math.round(label.x / 16)}:${Math.round(label.y / 16)}`;
+    const n = buckets.get(key) ?? 0;
+    buckets.set(key, n + 1);
+    if (n > 0) m.set(e.id, n * 10);
+  }
+  return m;
+}

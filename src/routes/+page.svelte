@@ -32,7 +32,7 @@
   import { uiStore, pushError } from '$lib/state/ui.svelte';
   import type { ActiveView } from '$lib/state/ui.svelte';
 
-  import { simNew, simReset } from '$lib/api/sim';
+  import { simNew, simReset, simStep } from '$lib/api/sim';
   import { presetsList, presetLoad } from '$lib/api/presets';
   import {
     challengesList,
@@ -45,7 +45,7 @@
     ChallengeResult,
   } from '$lib/api/challenges';
   import { isAppError } from '$lib/api';
-  import type { NodeKind, Topology } from '$lib/domain';
+  import type { NodeKind, SystemStats, Topology } from '$lib/domain';
 
   import Canvas from '$lib/components/canvas/Canvas.svelte';
   import { makeNode } from '$lib/components/canvas/geometry';
@@ -56,6 +56,7 @@
   import Metrics from '$lib/components/metrics/Metrics.svelte';
   import MainMenu from '$lib/components/shell/MainMenu.svelte';
   import type { MenuItem } from '$lib/components/shell/MainMenu.svelte';
+  import TrafficControl from '$lib/components/shell/TrafficControl.svelte';
   import Designs from '$lib/components/shell/Designs.svelte';
   import Examples from '$lib/components/shell/Examples.svelte';
   import type { PresetSummary } from '$lib/components/shell/Examples.svelte';
@@ -157,6 +158,121 @@
   const selectedNode = $derived(
     topologyStore.topology.nodes.find((n) => n.id === topologyStore.selectedNodeId) ?? null,
   );
+
+  /* ------------------------------------------------------------------ *
+   * Top bar: offered load, readouts, transport.
+   *
+   * TrafficControl in `shell/` is a pure view -- every value crosses as a
+   * prop and every action as a callback -- so the derivations and the
+   * write paths live here, exactly where the web app keeps them in
+   * `App.tsx` (lines 2445-2512 and 1810-1840). See that file's comments
+   * for WHY each of these is derived rather than stored; the short version
+   * is that topology is the single source of truth for the load figure
+   * (add/delete paths then cannot forget to reconcile a mirrored copy),
+   * and `failuresByReason` is a LIFETIME count that has to be
+   * differenced against sim time to become the per-second "Dropped" it
+   * claims to be.
+   * ------------------------------------------------------------------ */
+
+  /** Shown for the single frame before the first snapshot exists. */
+  const EMPTY_SYSTEM: SystemStats = {
+    timeMs: 0,
+    offeredRps: 0,
+    goodputRps: 0,
+    errorRate: 0,
+    p50: 0,
+    p95: 0,
+    p99: 0,
+    totalRequests: 0,
+    totalFailed: 0,
+  };
+
+  const clients = $derived(
+    topologyStore.topology.nodes.filter((n) => n.kind === 'client'),
+  );
+
+  /** The header's offered load: the sum across clients, so multi-client presets add up. */
+  const offeredRps = $derived(clients.reduce((sum, c) => sum + c.config.rps, 0));
+
+  const hasTrafficSource = $derived(clients.length > 0);
+
+  const system = $derived<SystemStats>(simulationStore.snapshot?.system ?? EMPTY_SYSTEM);
+
+  const cumulativeLost = $derived(
+    Object.values(simulationStore.snapshot?.failuresByReason ?? {}).reduce(
+      (sum, v) => (Number.isFinite(v) ? sum + v : sum),
+      0,
+    ),
+  );
+
+  const simTimeMs = $derived(simulationStore.snapshot?.system.timeMs ?? 0);
+
+  /* The backing values for the lost-per-second derivation. Deliberately
+     NOT `$state`: the effect below reads `cumulativeLost`/`simTimeMs` and
+     must be free to write these without re-triggering itself, and
+     `handleReset` has to zero them SYNCHRONOUSLY -- leaving it to the
+     effect meant the old run's "Dropped 104k/s" sat on screen next to p99
+     0ms until the next snapshot, which is forever while paused. */
+  let lostPrev: number | null = null;
+  let lostPrevTimeMs = 0;
+  let lostRps = $state(0);
+
+  $effect(() => {
+    if (!Number.isFinite(simTimeMs)) return;
+    const prev = lostPrev;
+    const dtMs = simTimeMs - lostPrevTimeMs;
+
+    // First sample, or a reset (sim time or the counter moved backwards):
+    // adopt the count as the new baseline and report nothing this frame.
+    if (prev === null || dtMs < 0 || cumulativeLost < prev) {
+      lostPrev = cumulativeLost;
+      lostPrevTimeMs = simTimeMs;
+      lostRps = 0;
+      return;
+    }
+
+    // Sample no faster than 250ms of sim time: below that the divisor is
+    // tiny and the quotient is mostly quantisation noise.
+    if (dtMs < 250) return;
+
+    const delta = cumulativeLost - prev;
+    lostPrev = cumulativeLost;
+    lostPrevTimeMs = simTimeMs;
+    lostRps = delta > 0 ? (delta * 1000) / dtMs : 0;
+  });
+
+  function resetLostRate(): void {
+    lostPrev = null;
+    lostPrevTimeMs = 0;
+    lostRps = 0;
+  }
+
+  /**
+   * The top-bar slider sets the TOTAL offered load. One client gets the
+   * value outright; several are scaled proportionally so a preset's
+   * deliberate traffic mix survives the drag, with the remainder placed on
+   * the first client so the distributed parts always sum to exactly
+   * `next`. Transcribed from `App.tsx`'s `handleRpsChange`.
+   *
+   * Each write goes through `updateNodeConfig`, which updates the store
+   * optimistically and pushes to the Rust engine -- so a multi-client drag
+   * costs one IPC per client rather than one per pixel, because
+   * TrafficControl commits on pointer-up (see its header comment).
+   */
+  function handleRpsChange(next: number): void {
+    if (clients.length === 0) return;
+    if (clients.length === 1) {
+      updateNodeConfig(clients[0].id, { rps: next });
+      return;
+    }
+    const total = clients.reduce((s, c) => s + c.config.rps, 0);
+    const shares = clients.map((c) =>
+      Math.max(0, Math.round(next * (total > 0 ? c.config.rps / total : 1 / clients.length))),
+    );
+    const spread = shares.reduce((s, v) => s + v, 0);
+    shares[0] = Math.max(0, shares[0] + (next - spread));
+    clients.forEach((c, i) => updateNodeConfig(c.id, { rps: shares[i] }));
+  }
 
   /* ------------------------------------------------------------------ *
    * Palette -> Canvas.
@@ -368,6 +484,46 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
   }
 
+  /* ------------------------------------------------------------------ *
+   * Where the bar actually ends, so everything that must clear it can.
+   *
+   * `--bar-clear` was a constant (shell.css still declares 80px as the
+   * first-paint value). It held while the bar was one row of a known
+   * height: 12px offset + 56px island + 12px gap. It stopped holding the
+   * moment the bar's contents changed -- the traffic island is far taller
+   * than the two text buttons it replaced, and on a narrow window the bar
+   * can wrap -- and a constant that has to be re-guessed every time the
+   * bar's contents change is a number that will be wrong again. Only the
+   * element knows, so it is measured, exactly as `App.tsx:668-718` does.
+   *
+   * This is also what keeps `.ins-close` clickable: the slots (and the
+   * inspector's close button inside the right slot) sit at
+   * `top: var(--bar-clear)` under a bar at z-index 40, so an under-measured
+   * clearance puts the islands on top of the button and the clicks land on
+   * the bar instead.
+   * ------------------------------------------------------------------ */
+
+  let barEl: HTMLElement | undefined = $state(undefined);
+  let barBottom = $state<number | null>(null);
+
+  /** The gap the bar floats in below, plus its offset, is read from CSS. */
+  const BAR_GAP_PX = 12;
+
+  /** Falls back to the stylesheet constant until the first measurement lands. */
+  const barClearStyle = $derived(
+    barBottom === null ? '' : `--bar-clear: ${barBottom + BAR_GAP_PX}px`,
+  );
+
+  function measureBar(): void {
+    const el = barEl;
+    if (!el) return;
+    /* The bar's BOTTOM edge, not its height: the bar floats, so its height
+       alone is short by the --sp-3 offset and the panels would start flush
+       against it with no gap at all. Reading the bottom of the rect
+       includes whatever the offset happens to be. */
+    barBottom = Math.round(el.getBoundingClientRect().bottom);
+  }
+
   function onWindowKeyDown(e: KeyboardEvent): void {
     if (isTypingTarget(e.target)) return;
 
@@ -409,11 +565,38 @@
         setRunning(!simulationStore.running);
         return;
       }
+      // Step one tick. Ignored with a modifier held (the block above
+      // already guarantees that) so it cannot shadow browser shortcuts
+      // like Ctrl/Cmd+S. Mirrors App.tsx; the table in
+      // `shell/Shortcuts.svelte` has printed this binding since it was
+      // ported, so until now it advertised a key nothing handled.
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        handleStep();
+        return;
+      }
     }
   }
 
   onMount(() => {
     window.addEventListener('keydown', onWindowKeyDown);
+
+    // Bar measurement (see the block above `onWindowKeyDown`). jsdom has no
+    // ResizeObserver, so the guard keeps the mount path testable; without
+    // one, the stylesheet's constant simply stands in.
+    measureBar();
+    let ro: ResizeObserver | null = null;
+    if (barEl && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => measureBar());
+      ro.observe(barEl);
+    }
+    /* A mobile webview's chrome collapsing resizes the VIEWPORT without
+       resizing the bar, so the ResizeObserver never fires while everything
+       measured against the window shifts underneath it. visualViewport is
+       the event that reports it; `resize` covers the rest. */
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', measureBar);
+    window.addEventListener('resize', measureBar);
 
     // `src-tauri/src/lib.rs`'s `setup()` installs a default engine (the
     // first built-in example) and starts the tick thread with it BEFORE
@@ -454,10 +637,39 @@
 
     return () => {
       window.removeEventListener('keydown', onWindowKeyDown);
+      ro?.disconnect();
+      vv?.removeEventListener('resize', measureBar);
+      window.removeEventListener('resize', measureBar);
     };
   });
 
+  /* ------------------------------------------------------------------ *
+   * Transport: play/pause, step, reset. The three icon buttons inside
+   * TrafficControl call straight into these.
+   *
+   * Step has no web-app equivalent to copy at THIS level because the web
+   * engine is in-process and stepped inline; here it is a command, and
+   * `sim_step` performs the same pause-then-advance contract in Rust so
+   * the delta cannot race the tick thread. Mirrors `App.tsx`'s
+   * `handleStep` ("a step always pauses first -- the same contract a
+   * debugger's step button has").
+   * ------------------------------------------------------------------ */
+
+  function handleToggleRun(): void {
+    setRunning(!simulationStore.running);
+  }
+
+  function handleStep(): void {
+    // Pause first, locally, so the button reflects the stopped clock at
+    // once; the command pauses again on the Rust side before advancing.
+    if (simulationStore.running) setRunning(false);
+    simStep().catch((e) => pushError(`Stepping the simulation failed: ${describeErr(e)}`));
+  }
+
   function handleReset(): void {
+    // Synchronously, not via the derivation effect: Reset must never leave
+    // the previous run's Dropped figure standing beside a zeroed clock.
+    resetLostRate();
     simReset().catch((e) => pushError(`Resetting the simulation failed: ${describeErr(e)}`));
   }
 </script>
@@ -467,7 +679,7 @@
 </svelte:head>
 
 <div class="app">
-  <header class="app-bar">
+  <header class="app-bar" bind:this={barEl}>
     <div class="app-island app-island-brand">
       <div class="app-brand">
         <h1 class="app-title">Breakscale</h1>
@@ -475,16 +687,26 @@
       </div>
     </div>
 
-    <div class="app-island app-island-sim">
-      <button
-        type="button"
-        class="btn btn-sm"
-        onclick={() => setRunning(!simulationStore.running)}
-        aria-pressed={simulationStore.running}
-      >
-        {simulationStore.running ? 'Pause' : 'Play'}
-      </button>
-      <button type="button" class="btn btn-sm btn-ghost" onclick={handleReset}>Reset</button>
+    <!-- The web app's `.app-island-load` (App.tsx ~2606): the load slider
+         and its readouts, the ONE control a student drives. This island
+         used to hold two text buttons (Play/Pause/Reset) instead -- a
+         stand-in until the control itself was ported -- which is why the
+         bar was 56px tall, why `--bar-clear`'s constant happened to fit,
+         and why the transport and every headline number were missing from
+         the shell. -->
+    <div class="app-island app-island-load">
+      <TrafficControl
+        rps={offeredRps}
+        onRpsChange={handleRpsChange}
+        running={simulationStore.running}
+        onToggleRun={handleToggleRun}
+        onStep={handleStep}
+        onReset={handleReset}
+        system={system}
+        lost={lostRps}
+        empty={topologyStore.topology.nodes.length === 0}
+        noTrafficSource={!hasTrafficSource}
+      />
     </div>
 
     <div class="app-island app-island-menu">
@@ -505,6 +727,7 @@
 
   <div
     class="app-body"
+    style={barClearStyle}
     class:has-library={uiStore.library}
     class:has-inspector={Boolean(selectedNode)}
     class:has-metrics={uiStore.metrics}
@@ -649,10 +872,11 @@
      shell's generic grid (rail/stage/strip geometry, panel slots, edge
      toggles -- all already styled by the import in `+layout.svelte`). */
 
-  .app-island-sim {
-    flex: none;
-    gap: var(--sp-2);
-  }
+  /* (The old `.app-island-sim` rule lived here. The sim island is gone:
+     its transport moved into `shell/TrafficControl.svelte`, and the island
+     itself is now shell.css's own `.app-island-load`, which carries the
+     sizing. Leaving the rule behind would only earn an unused-selector
+     warning from svelte-check.) */
 
   /* `.ins-panel` (Inspector's own root class) paints its own full card --
      border, background, shadow -- via the shared `.panel` primitive, so

@@ -19,12 +19,14 @@
 	 * displays this table. The same split holds here: this component's job is
 	 * to show the reference faithfully, so it is ported completely.
 	 *
-	 * NOTE(integration): wiring the real keybindings (Space to play/pause,
-	 * Ctrl+D to duplicate, the zoom/pan/select shortcuts, Ctrl+/ to open this
-	 * very dialog, and so on) is a task for whoever writes the root layout /
-	 * canvas keydown handler, mirroring App.tsx. Nothing below is live; it is
-	 * content only, and there is no loading or empty state to model since it
-	 * is a fixed, non-empty, compile-time table -- not data fetched from Rust.
+	 * NOTE(integration): this component only ever DISPLAYS the table, exactly
+	 * as Shortcuts.tsx does -- the handlers live in the root components,
+	 * mirroring App.tsx (canvas keydown for selection/clipboard/zoom, the
+	 * root page's keydown for Space, S, Ctrl+/ and the toggles). The
+	 * "nothing is live" caveat that used to sit here went stale when those
+	 * handlers landed, but the component's own contract has not changed: it
+	 * is a fixed, non-empty, compile-time table, so there is no loading or
+	 * empty state to model, and nothing here reads from Rust.
 	 */
 	const GROUPS: Group[] = [
 		{

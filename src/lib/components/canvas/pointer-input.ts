@@ -201,3 +201,62 @@ export function endPointer(
   if (pinch && (pinch.a === pointerId || pinch.b === pointerId)) return null;
   return pinch;
 }
+
+/* ------------------------------------------------------------------ *
+ * Multi-selection group drag
+ * ------------------------------------------------------------------ */
+
+/**
+ * Which OTHER members of the current selection a node press should carry
+ * along with it. Null means "this press is a plain single-node grab".
+ */
+export interface GroupDragTargets {
+  /** Other selected node ids, in topology order. */
+  nodes: string[];
+  /** Every selected annotation id (the grabbed id can never be one). */
+  annotations: string[];
+}
+
+/**
+ * Port of `Canvas.tsx`'s own promotion test (`if (sel.has(id) && sel.size > 1)`).
+ *
+ * A press on an ALREADY-SELECTED node of a multi-selection moves the whole
+ * selection, and every selected annotation rides along so a marquee'd
+ * cluster moves as one object whichever member was grabbed. A press on an
+ * unselected node -- or on the lone selected node -- selects and moves only
+ * that node instead, which is what the caller does with the null.
+ *
+ * The grabbed id itself is excluded from `nodes`: it is dragged through its
+ * own overlay, and including it would apply the shared delta twice.
+ */
+export function groupDragTargets(
+  hitId: string | null,
+  selectedIds: ReadonlySet<string>,
+  nodeIds: readonly string[],
+  annotationIds: readonly string[],
+): GroupDragTargets | null {
+  if (!hitId || !selectedIds.has(hitId) || selectedIds.size <= 1) return null;
+  return {
+    nodes: nodeIds.filter((id) => id !== hitId && selectedIds.has(id)),
+    annotations: annotationIds.filter((id) => selectedIds.has(id)),
+  };
+}
+
+/**
+ * The one delta every group member translates by, per axis.
+ *
+ * Both terms go through `place` (the drag's live snap function) BEFORE the
+ * subtraction, so the grabbed node's own snapped position and the members'
+ * shared delta are computed by the same rounding: a group preserves its
+ * exact shape under grid snapping instead of each member being snapped
+ * independently. `target` is the value about to become the grabbed node's
+ * position, `origin` that node's position at pointerdown -- both in world
+ * coords with the grab offset already removed.
+ */
+export function sharedSnappedDelta(
+  target: number,
+  origin: number,
+  place: (v: number) => number,
+): number {
+  return place(target) - place(origin);
+}

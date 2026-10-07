@@ -357,15 +357,20 @@
   min-height: 0;
   overflow: hidden;
 
-  /* Where the floating bar ends, plus a gap: its 12px offset, its 56px
-     height, and 12px below it. Everything that must clear the bar reads this
-     one number rather than restating the arithmetic.
+  /* Where the floating bar ends, plus a gap: its 12px offset, its height,
+     and 12px below it. Everything that must clear the bar reads this one
+     number rather than restating the arithmetic.
 
-     App.tsx MEASURES the bar and overwrites this inline. The constant is the
-     value used for the first paint, before the observer has run, and it is
-     the one-row desktop height. It stopped being correct on its own once the
-     bar could wrap: on a phone the bar stands over 200px tall and a constant
-     put the components toggle underneath it. */
+     `routes/+page.svelte` MEASURES the bar's bottom edge and overwrites
+     this inline (same mechanism as `App.tsx:668-718`, which is where the
+     original note above pointed). The constant is only the value used if
+     that measurement never lands -- it is the old two-text-button bar, and
+     it is now a FLOOR, not a correct answer: the traffic island that
+     replaced those buttons is far taller (the p99 hero alone is 34px), so
+     a window that never gets measured would need this raised. It stopped
+     being derivable from the breakpoint at all once the bar could wrap:
+     on a phone the bar stands over 200px tall and a constant put the
+     components toggle underneath it. */
   --bar-clear: 80px;
 
   --rail-w: 224px;

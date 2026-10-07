@@ -125,6 +125,21 @@ impl SimulationState {
                         poisoned.into_inner()
                     }
                 };
+                // Re-check the flag UNDER the lock. The check above is the
+                // fast path (no locking at all while paused); this one is
+                // what makes `sim_step`'s delta exact. That command pauses
+                // and then advances while holding this same lock, so a
+                // thread which read `running == true` above and then
+                // blocked here would otherwise advance once MORE after the
+                // step landed -- turning a 100ms step into 100ms plus an
+                // unpredictable 16ms. Checked under the lock, the last
+                // writer wins and a step is always exactly its own delta,
+                // which is the same guarantee the web engine gets by
+                // setting `runningRef.current = false` before advancing
+                // inline (`App.tsx` `handleStep`).
+                if !running.load(Ordering::SeqCst) {
+                    continue;
+                }
                 let Some(eng) = guard.as_mut() else { continue };
                 eng.advance(TICK_MS as f64);
 

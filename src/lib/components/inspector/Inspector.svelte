@@ -137,7 +137,39 @@
 	}
 
 	function onNumberCommit(field: InspectorField, e: Event): void {
-		commit(field, Number((e.currentTarget as HTMLInputElement).value));
+		const input = e.currentTarget as HTMLInputElement;
+		if (!node) return;
+		const spec = specFor(node.kind, field) as RangeFieldSpec;
+		const raw = input.value.trim();
+		const typed = Number(raw);
+
+		/* A typed commit can be an emptied box, non-numeric text, or a number
+		 * outside the field's own min/max -- `type="number"` reports all three
+		 * happily, and `Number('')` is 0 while `Number('abc')` is NaN. Any of
+		 * them used to travel to `updateNodeConfig`, and the Rust side merges
+		 * the patch with `serde_json::from_value::<NodeConfig>` (engine.rs),
+		 * which rejects the `null` that JSON gives a NaN. By then the
+		 * optimistic store already showed the value, so the Inspector
+		 * displayed a number the engine had never taken, and it stayed wrong
+		 * until the next node selection. (This is the desktop form of Bug 4;
+		 * the web app had no guard either, because its store write is the
+		 * same optimistic path -- the difference is nothing ever tells it no.)
+		 *
+		 * Empty/NaN: no write at all, and the box is restored to the node's
+		 * live value so what you see is what the engine has. Out of range:
+		 * clamp to the spec's min/max -- the input's own `min`/`max`
+		 * attributes already promise that interval, so the typed number is
+		 * brought back into it rather than sent off to be rejected. */
+		if (raw === '' || Number.isNaN(typed)) {
+			input.value = String(rawNumber(node, field));
+			const next = { ...draft };
+			delete next[field];
+			draft = next;
+			return;
+		}
+		const value = Math.min(spec.max, Math.max(spec.min, typed));
+		if (value !== typed) input.value = String(value);
+		commit(field, value);
 	}
 
 	function onTrafficPatternChange(e: Event): void {

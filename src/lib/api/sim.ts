@@ -49,6 +49,19 @@ export async function simReset(): Promise<void> {
   return invoke('sim_reset');
 }
 
+/**
+ * Pause the tick thread and advance the engine by one fixed step, emitting
+ * a fresh snapshot so the step is visible immediately (the thread that
+ * normally pushes snapshots has just been stopped).
+ *
+ * The pause is part of the command, not the caller's responsibility: a step
+ * raced against a free-running tick thread is a non-deterministic step.
+ * `deltaMs` defaults to the Rust side's `STEP_MS` (100, the web app's).
+ */
+export async function simStep(deltaMs?: number): Promise<void> {
+  return invoke('sim_step', { deltaMs });
+}
+
 /** Pause or resume the background tick thread. */
 export async function simSetRunning(running: boolean): Promise<void> {
   return invoke('sim_set_running', { running });
