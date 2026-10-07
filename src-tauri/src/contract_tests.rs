@@ -351,10 +351,11 @@ fn classify_params(params: &str) -> (Vec<String>, Vec<String>) {
 }
 
 /// One TypeScript call site name (`invoke('x', ...)` or `listen('x', ...)`)
-/// per line. Line comments are stripped and block-comment continuation
-/// lines are skipped, so doc comments that merely MENTION `invoke()`
-/// cannot register as call sites; a `//` inside a string argument cannot
-/// hide the call because the command name always precedes any argument.
+/// per line. Line comments are stripped quote-aware (an event channel like
+/// `'sim://snapshot'` contains `//`, so a naive split would truncate the
+/// literal before its closing quote and lose the channel) and block-comment
+/// continuation lines are skipped, so doc comments that merely MENTION
+/// `invoke()` cannot register as call sites.
 fn scan_ts_calls(src: &str, word: &str) -> Vec<String> {
     let mut found = Vec::new();
     for raw_line in src.lines() {
@@ -362,7 +363,7 @@ fn scan_ts_calls(src: &str, word: &str) -> Vec<String> {
         if trimmed.starts_with('*') || trimmed.starts_with("/*") {
             continue;
         }
-        let code = raw_line.split("//").next().unwrap_or("");
+        let code = strip_ts_line_comment(raw_line);
         let bytes = code.as_bytes();
         let mut i = 0usize;
         while i + word.len() <= bytes.len() {
@@ -415,6 +416,39 @@ fn scan_ts_calls(src: &str, word: &str) -> Vec<String> {
 
 fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Drop a trailing `//` line comment, keeping `//` that occurs INSIDE
+/// string literals: `sim://snapshot` / `sim://tick-error` are scanned as
+/// first string arguments, and splitting on `//` before the closing quote
+/// would leave the extract unterminated and report the channel missing.
+/// The `..i` slice is always on an ASCII boundary: `i` points at the first
+/// byte of `//`, and no UTF-8 continuation byte can equal `/`.
+fn strip_ts_line_comment(line: &str) -> &str {
+    let b = line.as_bytes();
+    let mut i = 0usize;
+    let mut quote: Option<u8> = None;
+    while i < b.len() {
+        let c = b[i];
+        if let Some(q) = quote {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+        } else if c == b'\'' || c == b'"' || c == b'`' {
+            quote = Some(c);
+            i += 1;
+        } else if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            return &line[..i];
+        } else {
+            i += 1;
+        }
+    }
+    line
 }
 
 /// Every non-test TypeScript file under `src/lib/api/`, sorted, as
@@ -994,9 +1028,16 @@ fn constructed_result_types_match_their_fixture_branches() {
 
     // DesignParseResult: ok carries { ok, topology, name } (name present
     // even when null); err carries only { ok, error }.
-    let topo: crate::sim::types::Topology =
-        serde_json::from_value(g_at(&g, &["payloads", "topology"]).clone())
-            .expect("fixture topology deserializes");
+    // The branch's OWN topology sample (a 1-node parse result). NOT
+    // payloads.topology: that fixture is a different graph (2 nodes, 1
+    // edge, 2 annotations), so comparing its shape against
+    // designParseResultOk.topology would compare two fixtures to each
+    // other. Topology itself (incl. the annotations key) is pinned by its
+    // own roundtrip in `canonical_payload_instances_round_trip_key_stably`.
+    let topo: crate::sim::types::Topology = serde_json::from_value(
+        g_at(&g, &["payloads", "designParseResultOk", "topology"]).clone(),
+    )
+    .expect("fixture designParseResultOk.topology deserializes");
     let parse_name = g_at(&g, &["payloads", "designParseResultOk", "name"])
         .as_str()
         .expect("designParseResultOk.name is a string")
