@@ -96,11 +96,12 @@ describe('dialog single-scroller contract (+page.svelte source)', () => {
   // jsdom cannot cascade -- assert the source contract directly instead.
   // Resolve from the vitest cwd (the package root): under the jsdom
   // environment `import.meta.url` is not a file: URL, so fileURLToPath
-  // rejects it.
-  const pageSource = readFileSync(resolve(process.cwd(), 'src/routes/+page.svelte'), 'utf8').replace(
-    /\/\*[\s\S]*?\*\//g,
-    '',
-  );
+  // rejects it. No comment stripping: comments contain glob paths like
+  // `shell/*.svelte` whose `/*` opens a bogus match and a naive
+  // /* ... */ strip swallows the markup between a comment and the next
+  // close. Instead the rule regexes below are specific enough (`.name {`)
+  // that no comment in the file can satisfy them -- each rule is unique.
+  const pageSource = readFileSync(resolve(process.cwd(), 'src/routes/+page.svelte'), 'utf8');
 
   it('clamps the card to the viewport instead of a percentage height', () => {
     const cardRule = pageSource.match(/\.sd-card\s*\{[^}]*\}/)?.[0] ?? '';
