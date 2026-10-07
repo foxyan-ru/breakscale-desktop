@@ -73,10 +73,17 @@ impl SimulationState {
     /// calls (a new design loaded, `sim_reset`) just swap the engine under
     /// the lock, which the tick thread picks up on its next iteration.
     pub fn install(&self, app: &AppHandle, engine: Engine) {
-        *self.engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
+        self.swap_engine(engine);
         if !self.thread_started.swap(true, Ordering::SeqCst) {
             self.spawn_tick_thread(app.clone());
         }
+    }
+
+    /// Put `engine` in as the live one without touching the tick thread:
+    /// the half of `install` that needs no `AppHandle`, split out so the
+    /// engine contract `require_engine` relies on is testable headless.
+    fn swap_engine(&self, engine: Engine) {
+        *self.engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
     }
 
     /// Mutate the live engine, if one exists. Returns `None` when no design
@@ -129,5 +136,53 @@ impl SimulationState {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::types::Topology;
+
+    fn blank_topology() -> Topology {
+        Topology {
+            nodes: vec![],
+            edges: vec![],
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn a_fresh_state_has_no_engine_yet() {
+        let state = SimulationState::default();
+        assert!(state.with_engine(|_| ()).is_none());
+    }
+
+    /// Once an engine is installed, the `with_engine` path every `sim_*`
+    /// command goes through (`require_engine`) must resolve -- installing
+    /// is the only thing standing between boot and "No design is loaded
+    /// yet." never being reachable.
+    #[test]
+    fn installing_an_engine_makes_with_engine_resolve() {
+        let state = SimulationState::default();
+        state.swap_engine(Engine::new(blank_topology(), 1));
+        assert!(state.with_engine(|e| e.snapshot()).is_some());
+    }
+
+    /// `sim_new` (and the boot-time install in `lib.rs`) replace an
+    /// existing engine; the swap must not lose the new one.
+    #[test]
+    fn installing_again_replaces_the_live_engine() {
+        let state = SimulationState::default();
+        state.swap_engine(Engine::new(blank_topology(), 1));
+        state.swap_engine(Engine::new(blank_topology(), 2));
+        assert!(state.with_engine(|e| e.snapshot()).is_some());
+    }
+
+    /// The tick thread gates on this flag; the boot engine must already be
+    /// considered running so snapshots flow before any frontend call.
+    #[test]
+    fn running_defaults_to_true() {
+        assert!(SimulationState::default().is_running());
     }
 }

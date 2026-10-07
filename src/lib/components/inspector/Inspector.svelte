@@ -38,7 +38,7 @@
 	   live-drag timing does not need to match the web app's.
 	   ========================================================================== */
 
-	import { topologyStore, updateNodeConfig } from '$lib/state/topology.svelte';
+	import { topologyStore, updateNodeConfig, clearSelection } from '$lib/state/topology.svelte';
 	import { simulationStore } from '$lib/state/simulation.svelte';
 	import { DEFAULT_TRAFFIC_PERIOD_S } from '$lib/domain';
 	import type { NodeConfig, NodeStats, SimNode, TrafficPattern } from '$lib/domain';
@@ -176,6 +176,16 @@
 				{#if n.label.trim().toLowerCase() !== kindName.toLowerCase()}
 					<span class="label">{kindName}</span>
 				{/if}
+				<!-- Escape and a background click also close the inspector, but
+				     both are invisible: students reported being trapped here. -->
+				<button
+					type="button"
+					class="btn btn-ghost btn-sm btn-icon ins-close"
+					aria-label="Close inspector"
+					onclick={() => clearSelection()}
+				>
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+				</button>
 			</header>
 			<p class="prose ins-blurb">{KIND_BLURB[n.kind]}</p>
 
@@ -355,6 +365,14 @@
 		justify-content: space-between;
 		gap: var(--sp-2);
 		min-width: 0;
+	}
+
+	/* The head aligns baselines (title vs kind label); the close button has
+	   no text baseline of its own, so centre it instead, and never let it
+	   squeeze the truncating title. */
+	.ins-close {
+		align-self: center;
+		flex: none;
 	}
 
 	.ins-title {

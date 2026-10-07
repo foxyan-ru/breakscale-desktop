@@ -131,6 +131,7 @@
     PORT_CY,
     MIN_ZOOM,
     MAX_ZOOM,
+    ZOOM_STEP,
     DETAIL_ZOOM,
     MINIMAL_ZOOM,
     GLYPH_PX,
@@ -428,6 +429,15 @@
     const wx = (px - view.x) / view.k;
     const wy = (py - view.y) / view.k;
     view = { k, x: px - wx * k, y: py - wy * k };
+  }
+
+  /** Chrome-button zoom: scale about the viewport centre, like the web
+   *  app's `zoomCentered` -- the diagram grows where the eye already is. */
+  function zoomBy(factor: number): void {
+    const el = surfaceEl;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    zoomAt(r.width / 2, r.height / 2, (k) => k * factor);
   }
 
   function gotoWorld(wx: number, wy: number): void {
@@ -802,7 +812,14 @@
       }
       case 'link': {
         if (!linkPreview) break;
-        const hit = hitTest(e.target);
+        // `promote()` captured the pointer on the surface element, so once
+        // the drag promotes, every move event is retargeted to the surface
+        // and `hitTest(e.target)` can never resolve the node/port under the
+        // cursor -- `over` would stay null and `finishDrag` would never
+        // `addEdge`, breaking drag-to-connect entirely. Ask the browser for
+        // the element actually under the pointer instead; the link preview
+        // path is `pointer-events: none` (Canvas.css) so it never wins.
+        const hit = hitTest(document.elementFromPoint(e.clientX, e.clientY));
         const overId =
           (hit.kind === 'node' || hit.kind === 'port-in') && hit.id && canLink(linkPreview.from, hit.id)
             ? hit.id
@@ -1966,7 +1983,29 @@
     {/if}
   {/if}
 
-  <div class="cv-zoom-readout" data-chrome="zoom-readout" aria-hidden="true">{Math.round(view.k * 100)}%</div>
+  <!-- The zoom cluster. The % badge used to live alone at the bottom LEFT,
+       where shell.css could not lift it (it only lifts .cv-ledger/.cv-zoom),
+       so the metrics strip covered it; moving it inside the cluster puts
+       every zoom affordance where shell.css's offsets already aim. -->
+  <div class="cv-zoom" data-chrome="zoom">
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm"
+      aria-label="Zoom out"
+      onclick={() => zoomBy(1 / ZOOM_STEP)}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14" /></svg>
+    </button>
+    <span class="cv-zoom-level">{Math.round(view.k * 100)}%</span>
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm"
+      aria-label="Zoom in"
+      onclick={() => zoomBy(ZOOM_STEP)}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
+  </div>
 </div>
 
 <!-- ==========================================================================
@@ -2061,6 +2100,6 @@
          Minimap's `ongoto`.
        - Background grid lines (app.css's `--grid-line`/`--grid-major`
          tokens) are painted via a CSS `background-image` on `.cv-surface`
-         in Canvas.css rather than as SVG rules; visually equivalent, cheaper
-         to keep in sync with pan/zoom via CSS custom properties.
+       in Canvas.css rather than as SVG rules; visually equivalent, cheaper
+       to keep in sync with pan/zoom via CSS custom properties.
    ========================================================================== -->

@@ -276,7 +276,7 @@
     </button>
   </div>
 {:else}
-  <div class="ld-editor scroll">
+  <div class="ld-editor">
     {#if matches.leftover.length > 0}
       <ul class="issue-list panel">
         {#each matches.leftover as issue (issue.field + issue.message)}
@@ -831,12 +831,13 @@
 {/if}
 
 <style>
+  /* Auto-height on purpose: `.sd-body` owns scrolling for the whole dialog
+     (see ArchitectureEditor's matching comment). */
   .ld-editor {
     display: flex;
     flex-direction: column;
     gap: var(--sp-7);
     padding: var(--sp-5);
-    height: 100%;
   }
 
   section {

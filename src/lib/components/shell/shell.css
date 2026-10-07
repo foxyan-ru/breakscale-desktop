@@ -551,7 +551,11 @@
 
    The .cv-ledger / .cv-zoom overrides reach into the canvas's chrome from
    here on purpose: only the shell knows the panel state, and the offsets
-   are the shell's own geometry tokens. Canvas.css still owns their look.
+   are the shell's own geometry tokens. The cluster's look lives in this
+   file too, just below: a component-scoped base in Canvas.svelte would
+   out-specify the phone rule at the bottom of this sheet (same property,
+   lower specificity there), so base, lifts and hide all sit in one sheet
+   where source order decides.
    -------------------------------------------------------------------------- */
 
 /* Clears the rail plus BOTH gaps: the rail is inset from the window edge
@@ -601,6 +605,34 @@
    below it rather than starting level with it. */
 .app-body .mm {
   top: calc(var(--bar-clear) + 32px + var(--sp-2));
+}
+
+/* The zoom cluster itself: bottom-right of the stage, one row of
+   [zoom out | level | zoom in]. Base look lives here next to the overrides
+   above and the phone hide below, so the cascade stays inside one sheet.
+   Tokens mirror web's Canvas.css .cv-zoom. */
+.cv-zoom {
+  position: absolute;
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  background: var(--surface);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.cv-zoom-level {
+  min-width: 46px;
+  text-align: center;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-label);
+  color: var(--text-faint);
+  user-select: none;
 }
 
 .cv-ledger,

@@ -209,11 +209,43 @@
   let examplesLoaded = $state(false);
   let activePresetId: string | null = $state(null);
 
+  /**
+   * Cap how long a preset IPC call may take before its caller treats it as
+   * failed. Both commands are synchronous lookups over compile-time
+   * embedded data, so a real answer arrives immediately; the only way to
+   * take seconds is for the call to never settle at all (a native side
+   * that panicked without answering the invoke). Without this, such a call
+   * would leave the Examples spinner turning forever -- and in the startup
+   * path it would block `sim_new` outright, leaving the engine unloaded.
+   * Timing out turns a silent hang into the same visible, retryable error
+   * a rejection already produces.
+   */
+  const PRESET_FETCH_TIMEOUT_MS = 3000;
+
+  function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`${label} did not answer within ${PRESET_FETCH_TIMEOUT_MS}ms.`)),
+        PRESET_FETCH_TIMEOUT_MS,
+      );
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
+  }
+
   async function ensureExamplesLoaded(): Promise<void> {
     if (examplesLoaded) return;
     examplesLoading = true;
     try {
-      examplesList = await presetsList();
+      examplesList = await withTimeout(presetsList(), 'presets_list');
       examplesLoaded = true;
     } catch (e) {
       pushError(`Loading examples failed: ${describeErr(e)}`);
@@ -224,7 +256,7 @@
 
   async function handleLoadExample(id: string): Promise<void> {
     try {
-      const preset = await presetLoad(id);
+      const preset = await withTimeout(presetLoad(id), 'preset_load');
       setTopology(preset.topology);
       activePresetId = preset.id;
       loadedName = preset.name;
@@ -316,17 +348,17 @@
   /* ------------------------------------------------------------------ *
    * Bootstrap: start the simulation engine the moment the page renders.
    *
-   * `topologyStore` initializes with a default empty `Topology` (see
-   * `state/topology.svelte.ts`). A blank canvas is a valid start, but this
-   * app's whole pitch is watching a system behave under load, and
-   * `presets_list`/`preset_load` (now wrapped -- see `$lib/api/presets.ts`)
-   * make it easy to boot straight into a working one instead: the first
-   * built-in example loads exactly as if the reader had opened Examples and
-   * picked the top entry, so the simulation is already live, with traffic
-   * flowing, the instant the window appears. Falls back to the blank
-   * topology the store already holds if the presets command is unreachable
-   * for any reason (e.g. mid-integration while the Rust engine is still
-   * being finished -- see this task's report).
+   * The Rust side already installed a default engine (the first built-in
+   * example) in `lib.rs`'s `setup()` before this runs, so commands work
+   * and snapshots flow no matter what; what this block adds is the
+   * CANVAS's copy of that topology plus the examples list. `topologyStore`
+   * initializes with a blank `Topology` (see `state/topology.svelte.ts`),
+   * and `presets_list`/`preset_load` (wrapped in `$lib/api/presets.ts`)
+   * load exactly as if the reader had opened Examples and picked the top
+   * entry, so the instant the window appears canvas and engine agree on a
+   * working system with traffic flowing. Falls back to the blank topology
+   * the store already holds -- still handed to `sim_new` below -- if the
+   * presets command is unreachable or the fetch times out.
    * ------------------------------------------------------------------ */
 
   function isTypingTarget(t: EventTarget | null): boolean {
@@ -383,32 +415,38 @@
   onMount(() => {
     window.addEventListener('keydown', onWindowKeyDown);
 
+    // `src-tauri/src/lib.rs`'s `setup()` installs a default engine (the
+    // first built-in example) and starts the tick thread with it BEFORE
+    // the webview can invoke anything, so the simulation is already
+    // running by the time this component mounts -- mirror that locally so
+    // the Play/Pause button reads correctly on first paint instead of
+    // claiming paused. The bootstrap below then swaps in its own copy of
+    // the same preset, so canvas and engine stay on the same topology.
+    simulationStore.running = true;
+
     void (async () => {
       let topology: Topology = topologyStore.topology;
       try {
-        const list = await presetsList();
+        const list = await withTimeout(presetsList(), 'presets_list');
         examplesList = list;
         examplesLoaded = true;
         if (list.length > 0) {
-          const preset = await presetLoad(list[0].id);
+          const preset = await withTimeout(presetLoad(list[0].id), 'preset_load');
           topology = preset.topology;
           activePresetId = preset.id;
           loadedName = preset.name;
         }
       } catch {
-        // No examples reachable yet (command not wired on the Rust side,
-        // or genuinely none defined) -- fall back to the blank topology
-        // the store already initializes with. Not surfaced as an error:
-        // a blank canvas is a legitimate starting state, not a failure.
+        // No examples reachable (command unreachable, or the fetch timed
+        // out) -- fall back to the blank topology the store already
+        // initializes with; `sim_new` below still runs so the engine holds
+        // exactly what the canvas shows. Not surfaced as an error: a blank
+        // canvas is a legitimate starting state, not a failure.
       }
 
       topologyStore.topology = topology;
       try {
         await simNew(topology);
-        // The background tick thread starts running as soon as an engine
-        // exists (`state.rs`); mirror that locally so the Play/Pause button
-        // below reads correctly on first paint instead of claiming paused.
-        simulationStore.running = true;
       } catch (e) {
         pushError(`Starting the simulation failed: ${describeErr(e)}`);
       }
@@ -671,7 +709,12 @@
     flex-direction: column;
     gap: var(--sp-4);
     width: min(900px, 100%);
-    max-height: min(720px, 100%);
+    /* Viewport math instead of `100%`: this card is a `place-items: center`
+       (fit-content) grid item, so a percentage max-height has no guaranteed
+       definite base. Unclamped, the card would run past the viewport, which
+       `html, body { overflow: clip }` makes unreachable. Same number as
+       `min(720px, 100%)` when the percentage does resolve. */
+    max-height: min(720px, calc(100vh - var(--sp-5) * 2));
     min-height: 0;
     padding: var(--sp-5);
     outline: none;
@@ -703,6 +746,10 @@
     color: var(--accent-ink);
   }
 
+  /* The dialog's ONE scroll container: content past the card's max-height
+     lands here, and the wheel reaches it because the sysdesign/* roots are
+     plain auto-height blocks (a nested `.scroll` that cannot itself overflow
+     would stop the wheel via overscroll-behavior: contain). */
   .sd-body {
     min-height: 0;
     overflow-y: auto;

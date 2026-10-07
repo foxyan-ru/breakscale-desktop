@@ -72,7 +72,7 @@
   }
 </script>
 
-<div class="export-panel scroll">
+<div class="export-panel">
   {#if !doc}
     <p class="prose">Generate or load a system design before exporting.</p>
   {/if}
@@ -109,12 +109,13 @@
 </div>
 
 <style>
+  /* Auto-height on purpose: `.sd-body` owns scrolling for the whole dialog
+     (see ArchitectureEditor's matching comment). */
   .export-panel {
     display: flex;
     flex-direction: column;
     gap: var(--sp-5);
     padding: var(--sp-5);
-    height: 100%;
   }
 
   .export-grid {

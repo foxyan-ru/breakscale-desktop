@@ -17,6 +17,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state::SimulationState::default())
+        .setup(|app| {
+            // Install a default engine BEFORE the webview can invoke
+            // anything: the first built-in example (the same preset
+            // `presets_list` leads with, so the frontend's own bootstrap
+            // swaps in an identical topology and seed), falling back to a
+            // blank topology. With this, `require_engine` can never reject
+            // with "No design is loaded yet." -- every engine command works
+            // from the first frame and the tick thread is already emitting
+            // `sim://snapshot` events, whatever the frontend bootstrap does.
+            use tauri::Manager;
+            let topology = sim::presets::boot_topology();
+            app.state::<state::SimulationState>()
+                .install(app.handle(), sim::engine::Engine::new(topology, 1));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // sim
             commands::sim::sim_new,

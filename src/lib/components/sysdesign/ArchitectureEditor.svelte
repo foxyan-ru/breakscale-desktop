@@ -149,7 +149,7 @@
     </button>
   </div>
 {:else}
-  <div class="arch-editor scroll">
+  <div class="arch-editor">
     <div class="arch-toolbar">
       <div class="field-stack arch-name">
         <label class="label" for="sd-name">Design name</label>
@@ -424,12 +424,15 @@
 {/if}
 
 <style>
+  /* Plain auto-height block: `.sd-body` in +page.svelte is the ONE scroll
+     container. A nested `.scroll` root that never overflows would swallow
+     the wheel (overscroll-behavior: contain) instead of letting it reach
+     `.sd-body`. */
   .arch-editor {
     display: flex;
     flex-direction: column;
     gap: var(--sp-7);
     padding: var(--sp-5);
-    height: 100%;
   }
 
   .arch-toolbar {
