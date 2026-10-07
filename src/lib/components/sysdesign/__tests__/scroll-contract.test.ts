@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ArchitectureEditor from '../ArchitectureEditor.svelte';
@@ -94,10 +94,13 @@ describe('sysdesign panels own no nested scroller', () => {
 describe('dialog single-scroller contract (+page.svelte source)', () => {
   // The card clamp and .sd-body rule live in the route's <style>, which
   // jsdom cannot cascade -- assert the source contract directly instead.
-  const pageSource = readFileSync(
-    fileURLToPath(new URL('../../../../routes/+page.svelte', import.meta.url)),
-    'utf8',
-  ).replace(/\/\*[\s\S]*?\*\//g, '');
+  // Resolve from the vitest cwd (the package root): under the jsdom
+  // environment `import.meta.url` is not a file: URL, so fileURLToPath
+  // rejects it.
+  const pageSource = readFileSync(resolve(process.cwd(), 'src/routes/+page.svelte'), 'utf8').replace(
+    /\/\*[\s\S]*?\*\//g,
+    '',
+  );
 
   it('clamps the card to the viewport instead of a percentage height', () => {
     const cardRule = pageSource.match(/\.sd-card\s*\{[^}]*\}/)?.[0] ?? '';
