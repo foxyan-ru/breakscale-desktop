@@ -164,12 +164,25 @@ type Values<T> = T[keyof T];
 type RequiredKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? never : K }[keyof T];
 
 /**
+ * Keys of a fixture instance that JSON could actually carry. TypeScript
+ * normalises a heterogeneous JSON array union by tagging each member with
+ * the OTHER member's keys as optional `undefined` (`label?: undefined` on
+ * the note branch of `topology.annotations`) -- those markers are type
+ * machinery, not keys the parsed value ever has (JSON has no `undefined`),
+ * so they must not count as fixture keys in either direction of the pin.
+ * For single-shape payloads this is exactly `keyof F`.
+ */
+type JsonKeys<F> = { [K in keyof F]-?: [F[K]] extends [undefined] ? never : K }[keyof F];
+
+/**
  * Symmetric key-set difference between a fixture instance and a TS
  * interface; resolves to `never` only when both directions are empty.
  * Fixture-vs-domain order matters: `keyof` on a fixture object yields its
  * literal keys, `keyof` on the interface yields the declared ones.
  */
-type PinKeys<F, D> = Exclude<RequiredKeys<D>, keyof F> | Exclude<keyof F, keyof D>;
+type PinKeys<F, D> =
+  | Exclude<RequiredKeys<D>, JsonKeys<F>>
+  | Exclude<JsonKeys<F>, keyof D>;
 type Expect<T extends never> = T;
 
 // -- payloads.simSnapshot ---------------------------------------------------

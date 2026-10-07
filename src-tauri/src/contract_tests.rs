@@ -1047,7 +1047,8 @@ fn constructed_result_types_match_their_fixture_branches() {
     let app_error = crate::error::AppError::Validation(
         g_at(&g, &["payloads", "appErrorPayload", "message"])
             .as_str()
-            .expect("appErrorPayload.message"),
+            .expect("appErrorPayload.message")
+            .to_string(),
     );
     assert_key_shape_eq(
         g_at(&g, &["payloads", "appErrorPayload"]),
