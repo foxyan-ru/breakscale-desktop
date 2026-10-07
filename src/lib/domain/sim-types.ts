@@ -1,10 +1,10 @@
-﻿/**
+/**
  * Domain types for the discrete-event simulation engine.
  *
  * This is a field-for-field port of `src/sim/types.ts` from the web app.
  * Every doc comment explaining *why* a field exists is carried over
  * unchanged, because that reasoning is load-bearing for whoever edits this
- * next (see MIGRATION_PLAN.md Â§4). The Rust engine (`src-tauri/src/sim/types.rs`)
+ * next (see MIGRATION_PLAN.md §4). The Rust engine (`src-tauri/src/sim/types.rs`)
  * serialises with `#[serde(rename_all = "camelCase")]`, so this file's shape
  * is the wire contract between the two: nothing here should drift from it
  * without a matching change on the Rust side.
@@ -644,7 +644,7 @@ export interface Topology {
    * so every existing topology and saved design stays valid unchanged.
    *
    * Field-for-field port of `src/sim/annotations.ts`'s `Annotation = Note |
-   * Section` union, ported into `./annotations` (see MIGRATION_PLAN.md Â§4).
+   * Section` union, ported into `./annotations` (see MIGRATION_PLAN.md §4).
    */
   annotations?: Annotation[];
 }

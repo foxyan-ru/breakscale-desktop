@@ -1,4 +1,4 @@
-﻿<script module lang="ts">
+<script module lang="ts">
 	/**
 	 * A preset's browsable summary: id, name, tagline, description -- no
 	 * topology. Mirrors Rust `PresetSummary` in
@@ -155,7 +155,7 @@
 			/>
 
 			{#if loading}
-				<p class="ex-empty">Loading examplesâ€¦</p>
+				<p class="ex-empty">Loading examples…</p>
 			{:else if presets.length === 0}
 				<p class="ex-empty">No examples are available yet.</p>
 			{:else if shown.length === 0}

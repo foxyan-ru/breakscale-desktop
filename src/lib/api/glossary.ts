@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Typed wrapper around the `glossary_list` Tauri command.
  *
  * NOTE(integration) in `$lib/components/glossary/Glossary.svelte` and

@@ -1,4 +1,4 @@
-﻿//! The system-design document model -- MIGRATION_PLAN.md #8.
+//! The system-design document model -- MIGRATION_PLAN.md #8.
 //!
 //! A `SystemDesignDoc` is not a replacement for the topology; it is an
 //! architecture write-up anchored to one. `topology` is kept alongside the

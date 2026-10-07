@@ -42,7 +42,7 @@ interface TopologyState {
 }
 
 function createTopologyStore() {
-  return $state<TopologyState>({
+  const state = $state<TopologyState>({
     topology: { nodes: [], edges: [] },
     selectedIds: new SvelteSet<string>(),
     get selectedNodeId() {
@@ -56,6 +56,7 @@ function createTopologyStore() {
       return this.topology.edges.some((e: SimEdge) => e.id === id) ? id : null;
     },
   });
+  return state;
 }
 
 export const topologyStore = createTopologyStore();

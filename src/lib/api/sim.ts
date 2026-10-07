@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Typed wrappers around the `sim_*` Tauri commands, plus the `sim://*` event
  * listeners.
  *

@@ -1,4 +1,4 @@
-﻿<script module lang="ts">
+<script module lang="ts">
 	/**
 	 * Glossary entry shape.
 	 *
@@ -449,7 +449,7 @@
 				<!-- aria-live so a screen reader hears the result count change. -->
 				<p id="gl-count" class="gl-count" aria-live="polite">
 					{#if loading}
-						Loading termsâ€¦
+						Loading terms…
 					{:else if query}
 						{results.length} of {entries.length}
 						{results.length === 1 ? 'term' : 'terms'}
@@ -462,7 +462,7 @@
 			<div bind:this={listEl} class="gl-list scroll">
 				{#if loading}
 					<div class="empty">
-						<p>Loading the glossaryâ€¦</p>
+						<p>Loading the glossary…</p>
 					</div>
 				{:else if results.length === 0}
 					<div class="empty">
@@ -517,7 +517,7 @@
 
 <style>
 	/* ==========================================================================
-	   Glossary â€” the browsable reference. Ported from Glossary.css.
+	   Glossary ” the browsable reference. Ported from Glossary.css.
 
 	   A right-hand side sheet, fixed to the viewport. See the header comment
 	   in the script block above for why a sheet and not a modal.

@@ -1,9 +1,9 @@
-﻿/**
+/**
  * System-design document shapes: high-level architecture plus low-level
  * design, seeded from a `Topology` and editable from there.
  *
  * This module is NEW -- it has no web-app source to port from (see
- * MIGRATION_PLAN.md Â§8). It mirrors `src-tauri/src/sysdesign/model.rs`
+ * MIGRATION_PLAN.md §8). It mirrors `src-tauri/src/sysdesign/model.rs`
  * field-for-field; that Rust file is the SOURCE OF TRUTH (its
  * `#[serde(rename_all = "camelCase")]` is what makes this shape the actual
  * wire format) -- re-synced against it during integration after the two

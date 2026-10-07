@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   /* ==========================================================================
      The app shell: top bar, left rail, canvas, right panel, bottom strip,
      and every overlay panel, wired to the finished stores/api modules and
@@ -103,7 +103,7 @@
   /* ------------------------------------------------------------------ *
    * Main menu. Labels, icon paths and hints copied verbatim from the web
    * app's own `App.tsx` menu (`src/App.tsx`'s `menuItems`), so the port
-   * reads as the same app; "System design" is new (MIGRATION_PLAN.md Â§8
+   * reads as the same app; "System design" is new (MIGRATION_PLAN.md §8
    * has no web-app precedent to copy from), given a plain icon in the same
    * stroke style as the rest.
    * ------------------------------------------------------------------ */

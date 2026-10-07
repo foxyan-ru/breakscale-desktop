@@ -40,7 +40,7 @@ interface UiState {
 }
 
 function createUiStore() {
-  return $state<UiState>({
+  const state = $state<UiState>({
     library: true,
     metrics: false,
     railW: PANEL_LIMITS.railW.base,
@@ -49,6 +49,7 @@ function createUiStore() {
     activeView: 'canvas',
     errors: [],
   });
+  return state;
 }
 
 export const uiStore = createUiStore();

@@ -1,4 +1,4 @@
-﻿import type { NodeKind, SimEdge, SimNode, Topology } from './sim-types';
+import type { NodeKind, SimEdge, SimNode, Topology } from './sim-types';
 
 /* ------------------------------------------------------------------ *
  * Clipboard for the canvas.

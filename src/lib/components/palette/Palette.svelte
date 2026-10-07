@@ -1,4 +1,4 @@
-﻿<script module lang="ts">
+<script module lang="ts">
   /**
    * The two annotation-tool kinds Palette exposes alongside components.
    * Mirrors `export type AnnotationTool` in `src/components/Palette.tsx`,
@@ -46,7 +46,7 @@
      VENDOR NAMES -- STUBBED. The source shows a vendor's product name
      (e.g. "Amazon RDS") under the generic name via `nameFor(kind, vendor)`
      from `src/content/vendors/lookup.ts`, backed by ~2000 lines of vendor
-     spec data (`src/content/vendors/*.ts`). Per MIGRATION_PLAN.md Â§4 that
+     spec data (`src/content/vendors/*.ts`). Per MIGRATION_PLAN.md §4 that
      data ports to `src-tauri/data/vendors/*.json`, read through a
      Tauri command; neither the data nor a lookup command exist yet
      (`src-tauri/src/commands/` has not been created). `nameFor`

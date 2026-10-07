@@ -1,8 +1,8 @@
-﻿<script lang="ts">
+<script lang="ts">
   /* ==========================================================================
      Canvas -- the SVG diagram surface. Svelte reimplementation of
      `src/components/Canvas.tsx` (6295 lines) for the desktop migration (see
-     MIGRATION_PLAN.md Â§9 item 3, "Canvas interaction fidelity").
+     MIGRATION_PLAN.md §9 item 3, "Canvas interaction fidelity").
 
      This is NOT a line-for-line transliteration of the React version. The
      React file's pointer-capture/synthetic-click-suppression machinery
@@ -2002,7 +2002,7 @@
          (`geometry.ts`'s `defaultNodeConfig`), not the web app's 34
          kind-tuned defaults from `src/sim/presets.ts`'s `defaultConfig`
          (out of this task's scope; ports separately per MIGRATION_PLAN.md
-         Â§5). A freshly dropped autoscaler/breaker/shard/etc. needs its
+         §5). A freshly dropped autoscaler/breaker/shard/etc. needs its
          config tuned by hand in the Inspector before it behaves
          realistically; it will not crash or misrender in the meantime.
 

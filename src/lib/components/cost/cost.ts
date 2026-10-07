@@ -1,4 +1,4 @@
-﻿/**
+/**
  * What a design would cost to run, per month.
  *
  * Faithful client-side port of `src/content/vendors/cost.ts` from the web
@@ -7,7 +7,7 @@
  * alongside the rest of the vendor shapes -- so this module imports them and
  * carries only the arithmetic.
  *
- * WHY THIS IS TYPESCRIPT AND NOT A TAURI COMMAND. MIGRATION_PLAN.md Â§4 lists
+ * WHY THIS IS TYPESCRIPT AND NOT A TAURI COMMAND. MIGRATION_PLAN.md §4 lists
  * `vendors::cost` as the intended Rust home for this arithmetic, and it is
  * being ported there in parallel (see `src-tauri/src/vendors/cost.rs`).
  * But `api/*.ts` is fixed for this pass and has no `vendors_*` command yet

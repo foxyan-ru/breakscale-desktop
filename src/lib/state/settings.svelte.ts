@@ -30,7 +30,7 @@ export interface Settings {
 }
 
 function createSettingsStore() {
-  return $state<Settings>({
+  const state = $state<Settings>({
     tooltips: false,
     sparklines: true,
     snapToGrid: true,
@@ -38,6 +38,7 @@ function createSettingsStore() {
     vendor: 'generic',
     theme: 'system',
   });
+  return state;
 }
 
 export const settingsStore = createSettingsStore();

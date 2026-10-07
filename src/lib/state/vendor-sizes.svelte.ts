@@ -31,7 +31,8 @@ import type { VendorId } from '$lib/domain';
 const key = (vendor: VendorId, nodeId: string): string => `${vendor}:${nodeId}`;
 
 function createVendorSizesStore() {
-  return $state<Record<string, string>>({});
+  const state = $state<Record<string, string>>({});
+  return state;
 }
 
 /** `"<vendorId>:<nodeId>" -> sizeName`. Prefer the functions below over reading this directly. */

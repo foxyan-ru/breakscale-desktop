@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Typed wrappers around the `presets_list`/`preset_load` Tauri commands.
  *
  * NOTE(integration) in `$lib/components/shell/Examples.svelte` flagged these

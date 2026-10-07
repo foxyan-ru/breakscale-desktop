@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Domain barrel: re-exports every type/constant in `lib/domain/*` for
  * `import { ... } from '$lib/domain'`.
  */

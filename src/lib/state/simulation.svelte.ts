@@ -15,11 +15,12 @@ interface SimulationState {
 }
 
 function createSimulationStore() {
-  return $state<SimulationState>({
+  const state = $state<SimulationState>({
     snapshot: null,
     running: false,
     tickError: null,
   });
+  return state;
 }
 
 export const simulationStore = createSimulationStore();

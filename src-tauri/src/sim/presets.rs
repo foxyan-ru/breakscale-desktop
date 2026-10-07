@@ -1,4 +1,4 @@
-﻿//! Faithful port of `src/sim/presets.ts`.
+//! Faithful port of `src/sim/presets.ts`.
 //!
 //! Per MIGRATION_PLAN.md #5 ("Why presets/glossary/vendor specs port as
 //! data, not code"): `defaultConfig(kind)` **is** logic (a switch over 33

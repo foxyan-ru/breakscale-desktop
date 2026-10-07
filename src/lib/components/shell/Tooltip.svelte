@@ -1,4 +1,4 @@
-﻿<script module lang="ts">
+<script module lang="ts">
   /* ==========================================================================
      Explanation tooltips. Ported from `src/components/Tooltip.tsx` +
      `Tooltip.css`.
@@ -56,7 +56,7 @@
      GLOSSARY INTEGRATION -- CURRENTLY STUBBED.
 
      `src/content/glossary.ts` (990 lines) is ported as DATA to
-     `src-tauri/data/glossary.json` per MIGRATION_PLAN.md Â§4, read
+     `src-tauri/data/glossary.json` per MIGRATION_PLAN.md §4, read
      from the frontend rather than bundled into it. As of this file there is
      no `src-tauri/src/commands/` module at all, so there is no
      `glossary_lookup` / `glossary_list` command yet for `$lib/api` to wrap.
