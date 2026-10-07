@@ -1,0 +1,263 @@
+{
+  "id": "aws",
+  "label": "AWS",
+  "region": "us-east-1",
+  "kinds": {
+    "client": {
+      "product": "Client",
+      "note": "Not an AWS product. Traffic originates outside the account, so there is nothing to name here."
+    },
+    "lb": {
+      "product": "Elastic Load Balancing (Application Load Balancer)",
+      "note": "ELB is three products. ALB is the HTTP one and the one a web system design means; NLB is layer 4, and the Classic balancer is previous generation."
+    },
+    "service": {
+      "product": "Amazon EC2",
+      "note": "The instance a student pictures when they say \"a server\". ECS, EKS and App Runner all schedule onto the same hardware, so the sizes below are what any of them ultimately buy.",
+      "sizes": [
+        {
+          "name": "t3.micro",
+          "vcpu": 2,
+          "memory": 1,
+          "memoryUnit": "GiB",
+          "network": "Up to 5 Gigabit",
+          "pricePerHour": 0.0104,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/us-east-1/index.json"
+        },
+        {
+          "name": "t3.medium",
+          "vcpu": 2,
+          "memory": 4,
+          "memoryUnit": "GiB",
+          "network": "Up to 5 Gigabit",
+          "pricePerHour": 0.0416,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/us-east-1/index.json"
+        },
+        {
+          "name": "m6i.large",
+          "vcpu": 2,
+          "memory": 8,
+          "memoryUnit": "GiB",
+          "network": "Up to 12500 Megabit",
+          "pricePerHour": 0.096,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/us-east-1/index.json"
+        },
+        {
+          "name": "m6i.xlarge",
+          "vcpu": 4,
+          "memory": 16,
+          "memoryUnit": "GiB",
+          "network": "Up to 12500 Megabit",
+          "pricePerHour": 0.192,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/us-east-1/index.json"
+        },
+        {
+          "name": "m6i.2xlarge",
+          "vcpu": 8,
+          "memory": 32,
+          "memoryUnit": "GiB",
+          "network": "Up to 12500 Megabit",
+          "pricePerHour": 0.384,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/us-east-1/index.json"
+        }
+      ]
+    },
+    "db": {
+      "product": "Amazon RDS",
+      "note": "RDS runs the engine a student already knows, usually PostgreSQL or MySQL. Aurora is the AWS-built alternative and DynamoDB is not relational at all, so neither is the honest default for a box labelled \"database\". Prices below are PostgreSQL, Single-AZ; Multi-AZ costs more.",
+      "sizes": [
+        {
+          "name": "db.t4g.micro",
+          "vcpu": 2,
+          "memory": 1,
+          "memoryUnit": "GiB",
+          "network": "Up to 5 Gigabit",
+          "pricePerHour": 0.016,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRDS/current/us-east-1/index.json"
+        },
+        {
+          "name": "db.t3.medium",
+          "vcpu": 2,
+          "memory": 4,
+          "memoryUnit": "GiB",
+          "network": "Low to Moderate",
+          "pricePerHour": 0.072,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRDS/current/us-east-1/index.json"
+        },
+        {
+          "name": "db.m6i.large",
+          "vcpu": 2,
+          "memory": 8,
+          "memoryUnit": "GiB",
+          "network": "Up to 12.5 Gbps",
+          "pricePerHour": 0.178,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRDS/current/us-east-1/index.json"
+        },
+        {
+          "name": "db.r6g.large",
+          "vcpu": 2,
+          "memory": 16,
+          "memoryUnit": "GiB",
+          "network": "Up to 10 Gigabit",
+          "pricePerHour": 0.225,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRDS/current/us-east-1/index.json"
+        },
+        {
+          "name": "db.r6g.xlarge",
+          "vcpu": 4,
+          "memory": 32,
+          "memoryUnit": "GiB",
+          "network": "Up to 10 Gigabit",
+          "pricePerHour": 0.45,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRDS/current/us-east-1/index.json"
+        }
+      ]
+    },
+    "cache": {
+      "product": "Amazon ElastiCache",
+      "note": "Prices below are the Redis OSS node-hour rate. Valkey is cheaper and Memcached matches Redis, so the engine choice moves the number. The memory figures are AWS's own and are not round: a cache.r6g.large is published as 13.07 GiB, being what is left for data after the node reserves its own.",
+      "sizes": [
+        {
+          "name": "cache.t4g.micro",
+          "vcpu": 2,
+          "memory": 0.5,
+          "memoryUnit": "GiB",
+          "network": "Up to 5 Gigabit",
+          "maxConnections": 20000,
+          "pricePerHour": 0.016,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonElastiCache/current/us-east-1/index.json (specs and price); https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html (maxclients)"
+        },
+        {
+          "name": "cache.t4g.medium",
+          "vcpu": 2,
+          "memory": 3.09,
+          "memoryUnit": "GiB",
+          "network": "Up to 5 Gigabit",
+          "maxConnections": 65000,
+          "pricePerHour": 0.065,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonElastiCache/current/us-east-1/index.json (specs and price); https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html (maxclients)"
+        },
+        {
+          "name": "cache.m7g.large",
+          "vcpu": 2,
+          "memory": 6.38,
+          "memoryUnit": "GiB",
+          "network": "Up to 12.5 Gigabit",
+          "maxConnections": 65000,
+          "pricePerHour": 0.158,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonElastiCache/current/us-east-1/index.json (specs and price); https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html (maxclients)"
+        },
+        {
+          "name": "cache.r6g.large",
+          "vcpu": 2,
+          "memory": 13.07,
+          "memoryUnit": "GiB",
+          "network": "Up to 10 Gigabit",
+          "maxConnections": 65000,
+          "pricePerHour": 0.206,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonElastiCache/current/us-east-1/index.json (specs and price); https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html (maxclients)"
+        },
+        {
+          "name": "cache.r6g.xlarge",
+          "vcpu": 4,
+          "memory": 26.32,
+          "memoryUnit": "GiB",
+          "network": "Up to 10 Gigabit",
+          "maxConnections": 65000,
+          "pricePerHour": 0.411,
+          "pricedOn": "2026-08-28",
+          "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonElastiCache/current/us-east-1/index.json (specs and price); https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html (maxclients)"
+        }
+      ]
+    },
+    "queue": {
+      "product": "Amazon SQS",
+      "note": "A queue one consumer drains. Kafka-style fan-out to many independent readers is a different shape and belongs on the stream broker."
+    },
+    "worker": {
+      "product": "Amazon EC2",
+      "note": "A worker is a server that reads from a queue instead of from a socket, so it is the same EC2 hardware as a service. Sizes are shared with `service` rather than repeated, because repeating them would let the two drift."
+    },
+    "cdn": {
+      "product": "Amazon CloudFront"
+    },
+    "objectstore": {
+      "product": "Amazon S3"
+    },
+    "searchindex": {
+      "product": "Amazon OpenSearch Service"
+    },
+    "timeseriesdb": {
+      "product": "Amazon Timestream for InfluxDB",
+      "note": "Timestream now covers time series through managed InfluxDB, which is also the engine a student is most likely to have met."
+    },
+    "graphdb": {
+      "product": "Amazon Neptune"
+    },
+    "coldstorage": {
+      "product": "Amazon S3 Glacier",
+      "note": "A storage class of S3 rather than a separate service, chosen because the retrieval delay is the thing being taught."
+    },
+    "vectordb": {
+      "product": "Amazon OpenSearch Serverless (vector search collection)",
+      "note": "AWS sells no standalone vector database. The nearest purpose-built thing is a vector search collection on OpenSearch Serverless, which is also what Bedrock knowledge bases default to."
+    },
+    "streambroker": {
+      "product": "Amazon Kinesis Data Streams",
+      "note": "Kinesis is the AWS-native one and shows the shard model plainly. Amazon MSK is the choice if the lesson depends on Kafka itself rather than on partitioned streaming."
+    },
+    "pubsub": {
+      "product": "Amazon SNS",
+      "note": "Fan-out to subscribers, as against SQS, which is one queue drained by one consumer group. The pair is usually taught together."
+    },
+    "websocket": {
+      "product": "Amazon API Gateway (WebSocket API)",
+      "note": "A distinct API type from the REST and HTTP ones, because it holds the connection open and bills per connection-minute."
+    },
+    "apigateway": {
+      "product": "Amazon API Gateway",
+      "note": "The HTTP API is the cheaper and simpler of the two request/response types; the REST API is the one with the fuller feature set."
+    },
+    "lambda": {
+      "product": "AWS Lambda"
+    },
+    "cron": {
+      "product": "Amazon EventBridge Scheduler",
+      "note": "The current scheduling product. EventBridge rules on a schedule expression still work and are what older material shows."
+    },
+    "ratelimiter": {
+      "product": "AWS WAF (rate-based rules)",
+      "note": "Two different products limit rate. WAF drops abusive traffic at the edge, which is what a rate limiter in a diagram usually means; API Gateway usage plans throttle a known caller to a quota."
+    },
+    "replica": {
+      "product": "Amazon RDS read replica",
+      "note": "Not a separate product. A replica is an RDS instance sized on its own, so the `db` sizes apply."
+    },
+    "shard": {
+      "product": "Amazon RDS",
+      "note": "AWS sells no sharding product for RDS. A shard is one more independent RDS instance and the application decides what goes where, which is the point worth teaching."
+    },
+    "edgecompute": {
+      "product": "Amazon CloudFront Functions",
+      "note": "Two options run at the edge. CloudFront Functions is the light one, for header and URL work at the point of presence; Lambda@Edge runs longer and costs more."
+    },
+    "transcoder": {
+      "product": "AWS Elemental MediaConvert",
+      "note": "The file-based transcoder, which is the batch \"convert this upload\" job. MediaLive is the live-stream counterpart. Elastic Transcoder is the previous generation."
+    }
+  }
+}

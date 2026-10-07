@@ -1,0 +1,60 @@
+{
+  "id": "autoscaling-service",
+  "name": "Autoscaling service",
+  "tagline": "Capacity arriving after it was needed",
+  "description": "Capacity chases the load, but new servers take time to boot, so requests fail in the gap between the two.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 3000, "retries": 0, "rps": 250,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 300, "y": 190,
+        "config": {
+          "capacity": 3, "instances": 3, "serviceMs": 25, "serviceCv": 0.5, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 560, "y": 190,
+        "config": {
+          "capacity": 24, "instances": 1, "serviceMs": 8, "serviceCv": 0.6, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "scaler", "kind": "autoscaler", "label": "Autoscaler", "x": 300, "y": 320,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "targetUtil": 0.7, "minCapacity": 2, "maxCapacity": 5, "cooldownMs": 3000,
+          "scaleStepPct": 0.5, "warmupMs": 4000,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->api", "from": "client", "to": "api", "weight": 1 },
+      { "id": "api->db", "from": "api", "to": "db", "weight": 1 },
+      { "id": "scaler->api", "from": "scaler", "to": "api", "weight": 1, "control": true }
+    ],
+    "annotations": [
+      {
+        "id": "as-note-lag", "kind": "note",
+        "text": "Raise the load and capacity does not follow. The controller waits out three seconds of cooldown, decides, and the new machines take four more to boot. Requests fail in that gap, and the gap is the point: an autoscaler lags, it does not shield.",
+        "x": 40, "y": 456, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

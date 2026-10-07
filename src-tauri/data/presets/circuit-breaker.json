@@ -1,0 +1,59 @@
+{
+  "id": "circuit-breaker",
+  "name": "Circuit breaker",
+  "tagline": "Giving a failing dependency room to recover",
+  "description": "A breaker watches a failing dependency and stops calling it. Break the payments API and watch the circuit trip, then recover.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 100,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 300, "y": 190,
+        "config": {
+          "capacity": 24, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 600, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "breaker", "kind": "breaker", "label": "Circuit Breaker", "x": 560, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "errorThreshold": 0.5, "windowMs": 4000, "openMs": 3000, "halfOpenProbes": 3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "payments", "kind": "service", "label": "Payments API", "x": 820, "y": 190,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 30, "serviceCv": 0.6, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->api", "from": "client", "to": "api", "weight": 1 },
+      { "id": "api->breaker", "from": "api", "to": "breaker", "weight": 1 },
+      { "id": "breaker->payments", "from": "breaker", "to": "payments", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "cb-note-trip", "kind": "note",
+        "text": "Right click the payments API and inject a crash. Once half the calls in a four second window fail, the breaker opens and the rest fail in microseconds instead of waiting out a timeout. After three seconds it closes and probes again.",
+        "x": 40, "y": 320, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

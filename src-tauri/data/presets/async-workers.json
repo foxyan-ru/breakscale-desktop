@@ -1,0 +1,68 @@
+{
+  "id": "async-workers",
+  "name": "Async workers",
+  "tagline": "A backlog that grows faster than it drains",
+  "description": "Requests are acknowledged instantly and buffered. Watch the backlog grow when workers fall behind.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 200,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 260, "y": 200,
+        "config": {
+          "capacity": 24, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "queue", "kind": "queue", "label": "Message Queue", "x": 500, "y": 200,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 5000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "worker", "kind": "worker", "label": "Workers", "x": 730, "y": 200,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 30, "serviceCv": 0.6, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 860, "y": 380,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 20, "serviceCv": 0.7, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->api", "from": "client", "to": "api", "weight": 1 },
+      { "id": "api->queue", "from": "api", "to": "queue", "weight": 1 },
+      { "id": "queue->worker", "from": "queue", "to": "worker", "weight": 1 },
+      { "id": "worker->db", "from": "worker", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "aw-note-queue", "kind": "note",
+        "text": "The workers drain 200 a second. Push the load past that and the client still gets an instant yes, because the queue is absorbing the difference. Nothing looks wrong until the queue fills, so the graph to watch is the queue depth, not the error rate.",
+        "x": 40, "y": 520, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

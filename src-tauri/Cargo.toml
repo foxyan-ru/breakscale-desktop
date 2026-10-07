@@ -1,0 +1,31 @@
+﻿[package]
+name = "breakscale-desktop"
+version = "0.1.0"
+description = "Breakscale desktop: a discrete-event system design simulator"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+repository = "https://github.com/rainman456/breakscale-desktop"
+
+[lib]
+name = "breakscale_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# YAML export (migration requirement); no unnecessary dependency was found to
+# avoid this one -- see MIGRATION_PLAN.md #10.
+serde_yaml = "0.9"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

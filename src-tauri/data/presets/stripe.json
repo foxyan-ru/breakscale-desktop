@@ -1,0 +1,216 @@
+{
+  "id": "stripe",
+  "name": "Stripe: correctness over availability",
+  "tagline": "Refusing work rather than charging twice",
+  "description": "A simplified reconstruction of Stripe from their published posts on rate limiters, idempotency and the ledger; numbers are illustrative. Duplicate retries answer from the idempotency store, a breaker fails charges fast when the card networks brown out, webhooks redeliver onto a dead-letter shelf, and at 4x the gateway sheds excess charges at the door while dashboards throttle against their replicas. Crash the ledger: charges stop dead, dashboards keep reading, and that ordering is the design.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "merchants", "kind": "client", "label": "Merchant API Calls", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 4000, "retries": 0, "rps": 100,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "gw", "kind": "apigateway", "label": "API Gateway", "x": 300, "y": 190,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 250, "burst": 250, "authFailRate": 0.01,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "idem", "kind": "cache", "label": "Idempotency Keys", "x": 560, "y": 190,
+        "config": {
+          "capacity": 32, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 128,
+          "hitRate": 0.08, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "paysvc", "kind": "service", "label": "Payment Service", "x": 820, "y": 190,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "fraud", "kind": "service", "label": "Radar Fraud Check", "x": 1080, "y": 60,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 30, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 1500, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "breaker", "kind": "breaker", "label": "Network Breaker", "x": 1340, "y": 60,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "errorThreshold": 0.5, "windowMs": 5000, "openMs": 4000, "halfOpenProbes": 3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cardnet", "kind": "service", "label": "Card Networks (external)", "x": 1600, "y": 60,
+        "config": {
+          "capacity": 72, "instances": 1, "serviceMs": 250, "serviceCv": 0.35, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0.01, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "ledger", "kind": "db", "label": "Ledger (double-entry)", "x": 1080, "y": 190,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 15, "serviceCv": 0.5, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "events", "kind": "streambroker", "label": "Payment Events", "x": 1080, "y": 450,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 4000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "partitions": 4,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "webhookq", "kind": "retryqueue", "label": "Webhook Delivery", "x": 1340, "y": 450,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 3, "serviceCv": 0.3, "queueLimit": 2000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 1000, "retries": 2, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "merchantep", "kind": "service", "label": "Merchant Endpoints", "x": 1600, "y": 450,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 40, "serviceCv": 0.6, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0.12, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "tsdb", "kind": "timeseriesdb", "label": "Billing Metrics", "x": 1340, "y": 644,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 1.5, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rangeQueryFraction": 0.02, "rangeQueryMs": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "payoutcron", "kind": "cron", "label": "Payout Batch", "x": 560, "y": 450,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "intervalMs": 25000, "batchSize": 150,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "payoutsvc", "kind": "service", "label": "Payout Jobs", "x": 820, "y": 450,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 20, "serviceCv": 0.5, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "dashboards", "kind": "client", "label": "Dashboard Readers", "x": 40, "y": 644,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "dlimit", "kind": "ratelimiter", "label": "Reporting Limiter", "x": 300, "y": 644,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 150, "burst": 200,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "reportsvc", "kind": "service", "label": "Reporting API", "x": 560, "y": 644,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "replica", "kind": "replica", "label": "Ledger Replicas", "x": 820, "y": 644,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 20, "serviceCv": 0.6, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 400, "readFraction": 1,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "merchants->gw", "from": "merchants", "to": "gw", "weight": 1 },
+      { "id": "gw->idem", "from": "gw", "to": "idem", "weight": 1 },
+      { "id": "idem->paysvc", "from": "idem", "to": "paysvc", "weight": 1 },
+      { "id": "paysvc->fraud", "from": "paysvc", "to": "fraud", "weight": 1 },
+      { "id": "paysvc->ledger", "from": "paysvc", "to": "ledger", "weight": 1 },
+      { "id": "paysvc->events", "from": "paysvc", "to": "events", "weight": 1 },
+      { "id": "fraud->breaker", "from": "fraud", "to": "breaker", "weight": 1 },
+      { "id": "breaker->cardnet", "from": "breaker", "to": "cardnet", "weight": 1 },
+      { "id": "events->webhookq", "from": "events", "to": "webhookq", "weight": 1 },
+      { "id": "events->tsdb", "from": "events", "to": "tsdb", "weight": 1 },
+      { "id": "webhookq->merchantep", "from": "webhookq", "to": "merchantep", "weight": 1 },
+      { "id": "payoutcron->payoutsvc", "from": "payoutcron", "to": "payoutsvc", "weight": 1 },
+      { "id": "payoutsvc->ledger", "from": "payoutsvc", "to": "ledger", "weight": 1 },
+      { "id": "dashboards->dlimit", "from": "dashboards", "to": "dlimit", "weight": 1 },
+      { "id": "dlimit->reportsvc", "from": "dlimit", "to": "reportsvc", "weight": 1 },
+      { "id": "reportsvc->replica", "from": "reportsvc", "to": "replica", "weight": 1 }
+    ],
+    "annotations": [
+      { "id": "sr-sec-charge", "kind": "section", "label": "Taking one payment", "x": 532, "y": 44, "width": 1280, "height": 250, "tone": 0 },
+      { "id": "sr-sec-after", "kind": "section", "label": "What happens after the money moves", "x": 532, "y": 434, "width": 1280, "height": 120, "tone": 1 },
+      { "id": "sr-sec-report", "kind": "section", "label": "Reading the money back out", "x": 532, "y": 628, "width": 1020, "height": 120, "tone": 2 },
+      {
+        "id": "sr-note-idem", "kind": "note",
+        "text": "A payment is the one thing you must never do twice. Each charge carries a key, and a retry of a charge already made gets the stored answer back instead of a second charge.",
+        "x": 16, "y": 320, "width": 236, "size": "md", "font": "hand"
+      },
+      {
+        "id": "sr-note-breaker", "kind": "note",
+        "text": "Right click the card networks and inject errors. The breaker beside them opens, and charges start failing immediately instead of hanging. A payment that fails cleanly can be retried; one left in the air while a slow network times out is the one nobody can account for.",
+        "x": 1840, "y": 40, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "sr-note-report", "kind": "note",
+        "text": "Dashboards read copies of the ledger, behind their own limit. Someone loading a big report can never make a payment wait, because the two never share a queue.",
+        "x": 16, "y": 776, "width": 236, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

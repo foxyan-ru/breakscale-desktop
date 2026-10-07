@@ -1,0 +1,58 @@
+{
+  "id": "cache-aside",
+  "name": "Cache aside",
+  "tagline": "What happens when the hit rate falls",
+  "description": "The cache absorbs most reads. Lower the hit rate and the database takes the whole load.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 200,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 200,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 280, "y": 200,
+        "config": {
+          "capacity": 24, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cache", "kind": "cache", "label": "Cache", "x": 550, "y": 200,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 2, "serviceCv": 0.4, "queueLimit": 512,
+          "hitRate": 0.85, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 820, "y": 200,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 30, "serviceCv": 0.7, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->api", "from": "client", "to": "api", "weight": 1 },
+      { "id": "api->cache", "from": "api", "to": "cache", "weight": 1 },
+      { "id": "cache->db", "from": "cache", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "ca-note-miss", "kind": "note",
+        "text": "The database only ever sees the misses. At an 85 percent hit rate it takes about 30 requests a second out of 200. Drag the hit rate down to 0.3 and it is instantly over its 133 a second ceiling, with no change in load at all.",
+        "x": 40, "y": 320, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "id": "uber",
+  "name": "Uber: ride dispatch",
+  "tagline": "Matching riders to drivers, city by city",
+  "description": "A simplified reconstruction of Uber from their published architecture; numbers are illustrative. Driver pings outnumber rider requests 13 to 1 and ride a Kafka-style stream; at 4x the geo consumer lags and dispatch matches on stale positions without a single rider-facing error. Crash the payment processor and the breaker contains it.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "riders", "kind": "client", "label": "Rider Apps", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 3000, "retries": 0, "rps": 30,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "gw", "kind": "apigateway", "label": "Edge Gateway", "x": 300, "y": 190,
+        "config": {
+          "capacity": 32, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 200, "burst": 200, "authFailRate": 0.005,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "match", "kind": "service", "label": "Dispatch", "x": 560, "y": 60,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "eta", "kind": "service", "label": "Maps ETA", "x": 820, "y": 60,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 15, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "push", "kind": "service", "label": "Offer Push", "x": 1080, "y": 60,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "pricing", "kind": "service", "label": "Dynamic Pricing", "x": 820, "y": 190,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "surge-kv", "kind": "db", "label": "Surge KV Store", "x": 1080, "y": 190,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 4, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "trips", "kind": "service", "label": "Trip Service", "x": 560, "y": 384,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 12, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "trip-db", "kind": "replica", "label": "Trip Store", "x": 820, "y": 384,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 2, "replicationLagMs": 50, "readFraction": 0.7,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "pay-brk", "kind": "breaker", "label": "Payment Breaker", "x": 820, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "errorThreshold": 0.5, "windowMs": 4000, "openMs": 3000, "halfOpenProbes": 3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "payments", "kind": "service", "label": "Payments", "x": 1080, "y": 514,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 200, "serviceCv": 0.5, "queueLimit": 16,
+          "hitRate": 0, "errorRate": 0.01, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "drivers", "kind": "client", "label": "Driver Pings", "x": 40, "y": 708,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 400,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "ingest", "kind": "service", "label": "Location Ingest", "x": 300, "y": 708,
+        "config": {
+          "capacity": 24, "instances": 1, "serviceMs": 3, "serviceCv": 0.4, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "kafka", "kind": "streambroker", "label": "Kafka Event Bus", "x": 560, "y": 708,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.2, "queueLimit": 4000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "partitions": 12,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "geo-upd", "kind": "service", "label": "Geo Updater", "x": 820, "y": 708,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "geo", "kind": "shard", "label": "Geo Index (H3)", "x": 1080, "y": 708,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 6, "shardCapacity": 2, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "surge-w", "kind": "service", "label": "Surge Pipeline", "x": 820, "y": 838,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "m3", "kind": "timeseriesdb", "label": "M3 Metrics", "x": 820, "y": 968,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 1.5, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rangeQueryFraction": 0.02, "rangeQueryMs": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "riders->gw", "from": "riders", "to": "gw", "weight": 1 },
+      { "id": "gw->match", "from": "gw", "to": "match", "weight": 3 },
+      { "id": "gw->trips", "from": "gw", "to": "trips", "weight": 1 },
+      { "id": "match->geo", "from": "match", "to": "geo", "weight": 1 },
+      { "id": "match->eta", "from": "match", "to": "eta", "weight": 1 },
+      { "id": "match->pricing", "from": "match", "to": "pricing", "weight": 1 },
+      { "id": "match->push", "from": "match", "to": "push", "weight": 1 },
+      { "id": "pricing->surge-kv", "from": "pricing", "to": "surge-kv", "weight": 1 },
+      { "id": "trips->trip-db", "from": "trips", "to": "trip-db", "weight": 1 },
+      { "id": "trips->pay-brk", "from": "trips", "to": "pay-brk", "weight": 1 },
+      { "id": "trips->kafka", "from": "trips", "to": "kafka", "weight": 1 },
+      { "id": "pay-brk->payments", "from": "pay-brk", "to": "payments", "weight": 1 },
+      { "id": "drivers->ingest", "from": "drivers", "to": "ingest", "weight": 1 },
+      { "id": "ingest->kafka", "from": "ingest", "to": "kafka", "weight": 1 },
+      { "id": "kafka->geo-upd", "from": "kafka", "to": "geo-upd", "weight": 1 },
+      { "id": "kafka->surge-w", "from": "kafka", "to": "surge-w", "weight": 1 },
+      { "id": "kafka->m3", "from": "kafka", "to": "m3", "weight": 1 },
+      { "id": "geo-upd->geo", "from": "geo-upd", "to": "geo", "weight": 1 },
+      { "id": "surge-w->surge-kv", "from": "surge-w", "to": "surge-kv", "weight": 1 }
+    ],
+    "annotations": [
+      { "id": "ub-sec-match", "kind": "section", "label": "Finding a driver", "x": 532, "y": 44, "width": 760, "height": 250, "tone": 0 },
+      { "id": "ub-sec-trip", "kind": "section", "label": "The trip, and getting paid", "x": 532, "y": 368, "width": 760, "height": 250, "tone": 1 },
+      { "id": "ub-sec-fire", "kind": "section", "label": "Where the drivers are, updated constantly", "x": 12, "y": 692, "width": 1280, "height": 380, "tone": 2 },
+      {
+        "id": "ub-note-fan", "kind": "note",
+        "text": "One rider request touches four services before an offer comes back. The slowest of them sets the wait, so a match happens at the speed of the weakest link here.",
+        "x": 1320, "y": 40, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "ub-note-pay", "kind": "note",
+        "text": "Drag the load to 4x and watch payments. Each charge takes 200ms and only four run at once, so it tops out near 20 a second. The breaker in front notices and starts failing fast, which beats every trip request piling up behind a slow card network.",
+        "x": 1320, "y": 368, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "ub-note-geo", "kind": "note",
+        "text": "The location index is split by map cell. Give it a hot key and the whole city crowds into one cell, so that one shard saturates while the rest sit idle.",
+        "x": 1320, "y": 696, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "ub-note-lag", "kind": "note",
+        "text": "400 driver pings a second go onto one stream, and three readers consume it on their own clocks. If the map updater falls behind, dispatch quietly matches on stale positions and nothing on the rider path shows an error.",
+        "x": 16, "y": 336, "width": 236, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

@@ -1,0 +1,802 @@
+/* ==========================================================================
+   Canvas -- the SVG diagram surface. Adapted from `src/components/Canvas.css`
+   (2103 lines) for the Svelte port (see Canvas.svelte's header comment and
+   MIGRATION_PLAN.md's Canvas interaction task).
+
+   NOT a line-for-line port. Everything the current Canvas.svelte template
+   actually renders is covered here, using app.css's tokens exclusively (no
+   hardcoded colour, per AGENTS.md: "All colour comes from tokens"). What is
+   NOT carried over from the 2103-line original: per-zoom-breakpoint
+   fine-tuning beyond the three detail tiers already in the markup, the
+   entrance/exit animations for newly-placed nodes, and the mobile mouse
+   presets not yet relevant to a desktop-only Tauri window. See Canvas.svelte's
+   closing comment block for the full itemised list of interaction gaps this
+   pairs with.
+
+   Loaded as a global (unscoped) stylesheet via `import './Canvas.css'` in
+   Canvas.svelte's <script>, the same way app.css is loaded globally --
+   Svelte has no mechanism for an external scoped stylesheet.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Surface
+   -------------------------------------------------------------------------- */
+
+.cv-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.cv-surface {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  cursor: default;
+  /* Two-layer grid: a 32px hairline rule and a 128px major rule every 4th
+     line, both in world space -- painted via CSS custom properties the
+     component keeps in sync with the view transform, rather than as SVG
+     rects, so panning/zooming the grid costs nothing beyond a background-
+     position/size recompute. */
+  background-image:
+    linear-gradient(to right, var(--grid-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-major) 1px, transparent 1px),
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size:
+    calc(128px * var(--grid-k, 1)) calc(128px * var(--grid-k, 1)),
+    calc(128px * var(--grid-k, 1)) calc(128px * var(--grid-k, 1)),
+    calc(32px * var(--grid-k, 1)) calc(32px * var(--grid-k, 1)),
+    calc(32px * var(--grid-k, 1)) calc(32px * var(--grid-k, 1));
+  background-position:
+    var(--grid-ox, 0) var(--grid-oy, 0),
+    var(--grid-ox, 0) var(--grid-oy, 0),
+    var(--grid-ox, 0) var(--grid-oy, 0),
+    var(--grid-ox, 0) var(--grid-oy, 0);
+}
+
+.cv-surface.is-pan {
+  cursor: grab;
+}
+
+.cv-surface.is-tool-note,
+.cv-surface.is-tool-section {
+  cursor: crosshair;
+}
+
+.cv-svg {
+  display: block;
+  user-select: none;
+}
+
+/* --------------------------------------------------------------------------
+   Nodes
+   -------------------------------------------------------------------------- */
+
+.cv-node {
+  cursor: grab;
+  outline: none;
+}
+
+.cv-node:focus-visible .cv-node-body {
+  stroke: var(--accent);
+  stroke-width: 2px;
+}
+
+.cv-node-body {
+  fill: var(--k-fill, var(--surface-2));
+  stroke: var(--k-stroke, var(--border-strong));
+  stroke-width: var(--bw-strong);
+  transition:
+    filter var(--dur-fast) var(--ease),
+    stroke var(--dur-fast) var(--ease);
+}
+
+.cv-node:hover .cv-node-body {
+  filter: brightness(0.98);
+}
+
+.cv-node-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2px;
+  pointer-events: none;
+}
+
+/* The instance-stack cards behind the body. */
+.cv-units {
+  pointer-events: none;
+}
+
+.cv-unit {
+  fill: var(--k-fill, var(--surface-2));
+  stroke: var(--k-stroke, var(--border-strong));
+  stroke-width: var(--bw);
+  opacity: 0.85;
+}
+
+.cv-unit.is-pending {
+  opacity: 0.35;
+  stroke-dasharray: 3 2;
+}
+
+.cv-node-hair {
+  stroke: var(--border);
+  stroke-width: 1px;
+}
+
+.cv-node-icon,
+.cv-glyph {
+  pointer-events: none;
+}
+
+.cv-glyph {
+  color: var(--k-ink, var(--text-dim));
+}
+
+.cv-node-name {
+  fill: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: var(--fw-body);
+  pointer-events: none;
+}
+
+.cv-node-mark {
+  pointer-events: none;
+}
+
+.cv-node-mark.is-warn {
+  fill: none;
+  stroke: var(--warn-mark);
+  stroke-width: 1.5px;
+}
+
+.cv-node-mark.is-danger {
+  fill: var(--danger-mark);
+}
+
+.cv-node-mark.is-fault {
+  fill: var(--text);
+}
+
+.cv-node-badge {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: var(--fw-num);
+  pointer-events: none;
+}
+
+.cv-node-badge.is-warming {
+  fill: var(--accent);
+}
+
+.cv-node-primary,
+.cv-node-sec {
+  pointer-events: none;
+}
+
+.cv-val {
+  fill: var(--text);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-num);
+}
+
+.cv-node-primary .cv-val {
+  font-size: 16px;
+}
+
+.cv-node.is-selected .cv-node-primary .cv-val {
+  font-size: 22px;
+}
+
+.cv-node.has-strip.is-selected .cv-node-primary .cv-val {
+  font-size: 16px;
+}
+
+.cv-node-sec .cv-val {
+  font-size: 12px;
+}
+
+.cv-cap {
+  fill: var(--text-faint);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: var(--fw-med);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Health tints the primary value and the meter, never the whole node. */
+.cv-node.is-warn .cv-node-primary .cv-val {
+  fill: var(--warn);
+}
+
+.cv-node.is-danger .cv-node-primary .cv-val,
+.cv-node.is-faulted .cv-node-primary .cv-val {
+  fill: var(--danger);
+}
+
+/* --------------------------------------------------------------------------
+   Node structure: strip (shard/replica/streambroker), vessel (queue)
+   -------------------------------------------------------------------------- */
+
+.cv-strip,
+.cv-vessel {
+  pointer-events: none;
+}
+
+.cv-cell {
+  fill: var(--surface-2);
+  stroke: var(--border);
+  stroke-width: 0.5px;
+}
+
+.cv-cell.is-lead {
+  stroke: var(--k-stroke, var(--border-strong));
+  stroke-width: 1px;
+}
+
+.cv-cell-fill {
+  fill: var(--ok-mark);
+}
+
+.cv-cell-fill.is-warn {
+  fill: var(--warn-mark);
+}
+
+.cv-cell-fill.is-danger {
+  fill: var(--danger-mark);
+}
+
+.cv-cell-lead-notch {
+  fill: var(--k-stroke, var(--accent));
+}
+
+.cv-vessel-track {
+  fill: var(--track);
+}
+
+.cv-vessel-fill {
+  fill: var(--accent);
+}
+
+.cv-vessel.is-shedding .cv-vessel-fill {
+  fill: var(--danger-mark);
+}
+
+.cv-vessel-brim {
+  fill: var(--line-3);
+}
+
+.cv-spark-base {
+  stroke: var(--border);
+  stroke-width: 1px;
+}
+
+.cv-spark {
+  fill: none;
+  stroke: var(--line-4);
+  stroke-width: 1.25px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* --------------------------------------------------------------------------
+   Meter
+   -------------------------------------------------------------------------- */
+
+.cv-meter-track {
+  fill: var(--track);
+  pointer-events: none;
+}
+
+.cv-meter-fill {
+  fill: var(--ok-mark);
+  pointer-events: none;
+  transition: width var(--dur-base) var(--ease);
+}
+
+.cv-meter-fill.is-warn {
+  fill: var(--warn-mark);
+}
+
+.cv-meter-fill.is-danger {
+  fill: var(--danger-mark);
+}
+
+.cv-meter-tick {
+  fill: var(--line-3);
+  pointer-events: none;
+}
+
+/* --------------------------------------------------------------------------
+   Ports
+   -------------------------------------------------------------------------- */
+
+.cv-port {
+  fill: var(--surface);
+  stroke: var(--line-3);
+  stroke-width: 1.5px;
+  pointer-events: none;
+}
+
+.cv-port-hit {
+  fill: transparent;
+  cursor: crosshair;
+}
+
+.cv-node:hover .cv-port,
+.cv-node.is-linking .cv-port {
+  stroke: var(--accent);
+}
+
+/* --------------------------------------------------------------------------
+   Link gesture (wiring a new edge)
+   -------------------------------------------------------------------------- */
+
+.cv-node.is-link-source .cv-node-body {
+  stroke: var(--accent);
+  stroke-width: 2px;
+}
+
+.cv-node.is-link-valid .cv-node-body {
+  stroke: var(--ok-mark);
+  stroke-width: 2px;
+  stroke-dasharray: 4 2;
+}
+
+.cv-node.is-link-invalid .cv-node-body {
+  stroke: var(--danger-mark);
+  opacity: 0.6;
+}
+
+.cv-node.is-link-target .cv-node-body {
+  fill: var(--ok-soft);
+}
+
+.cv-link-preview {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2px;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+}
+
+.cv-link-preview.is-valid {
+  stroke: var(--ok-mark);
+}
+
+.cv-link-armed {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2px;
+  stroke-dasharray: 2 2;
+  pointer-events: none;
+}
+
+/* --------------------------------------------------------------------------
+   Edges
+   -------------------------------------------------------------------------- */
+
+.cv-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18px;
+  cursor: pointer;
+}
+
+.cv-edge-line {
+  fill: none;
+  stroke: var(--line-2);
+  transition: stroke var(--dur-fast) var(--ease);
+}
+
+.cv-edge.is-warn .cv-edge-line {
+  stroke: var(--warn-mark);
+}
+
+.cv-edge.is-danger .cv-edge-line {
+  stroke: var(--danger-mark);
+}
+
+.cv-edge.is-selected .cv-edge-line {
+  stroke: var(--accent);
+}
+
+.cv-edge.is-control .cv-edge-line {
+  stroke-dasharray: 4 3;
+  stroke: var(--line-3);
+}
+
+/* A region's non-active edge: wired and healthy, deliberately unused. Kept
+   visually distinct from a plain idle link (finely dashed rather than
+   solid) so it does not read as a dead wire. */
+.cv-edge.is-state-standby .cv-edge-line {
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
+}
+
+.cv-edge-flow {
+  fill: none;
+  stroke: var(--accent);
+  stroke-dasharray: var(--dash-on, 3) var(--dash-off, 10);
+  animation-name: cv-flow;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes cv-flow {
+  to {
+    stroke-dashoffset: var(--dash-cycle, -20);
+  }
+}
+
+.cv-edge-arrow {
+  fill: var(--line-2);
+}
+
+.cv-edge.is-warn .cv-edge-arrow {
+  fill: var(--warn-mark);
+}
+
+.cv-edge.is-danger .cv-edge-arrow {
+  fill: var(--danger-mark);
+}
+
+.cv-edge.is-selected .cv-edge-arrow {
+  fill: var(--accent);
+}
+
+.cv-edge-break-gap {
+  fill: var(--bg);
+}
+
+.cv-edge-break-mark {
+  fill: none;
+  stroke: var(--danger-mark);
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+}
+
+.cv-edge-label {
+  fill: var(--text-dim);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+.cv-edge-label.is-control {
+  fill: var(--text-faint);
+  font-family: var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cv-edge-del {
+  cursor: pointer;
+}
+
+.cv-edge-del rect:not(.cv-edge-del-hit) {
+  fill: var(--danger);
+}
+
+.cv-edge-del path {
+  stroke: var(--text-on-fill);
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+}
+
+.cv-edge-del-hit {
+  fill: transparent;
+}
+
+/* --------------------------------------------------------------------------
+   Sections (behind everything)
+   -------------------------------------------------------------------------- */
+
+.cv-section-fill {
+  fill: var(--sec-fill, var(--ann-12-fill));
+  cursor: pointer;
+}
+
+.cv-section-line {
+  fill: none;
+  stroke: var(--sec-line, var(--ann-12-line));
+  stroke-width: 1.5px;
+  pointer-events: none;
+}
+
+.cv-section.is-selected .cv-section-line {
+  stroke: var(--accent);
+  stroke-width: 2px;
+}
+
+.cv-section-hit {
+  fill: none;
+  stroke: var(--sec-line, var(--ann-12-line));
+  stroke-width: 14px;
+  stroke-opacity: 0;
+  cursor: pointer;
+}
+
+.cv-section-label {
+  cursor: pointer;
+}
+
+.cv-section-label-bg {
+  fill: var(--sec-fill, var(--ann-12-fill));
+  stroke: var(--sec-line, var(--ann-12-line));
+  stroke-width: 1px;
+}
+
+.cv-section-label-text {
+  fill: var(--sec-ink, var(--ann-12-ink));
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: var(--fw-med);
+  pointer-events: none;
+}
+
+/* Tone palette: each index aliases a --ann-N-* trio from app.css. */
+.cv-section[data-tone='0'] { --sec-fill: var(--ann-0-fill); --sec-line: var(--ann-0-line); --sec-ink: var(--ann-0-ink); }
+.cv-section[data-tone='1'] { --sec-fill: var(--ann-1-fill); --sec-line: var(--ann-1-line); --sec-ink: var(--ann-1-ink); }
+.cv-section[data-tone='2'] { --sec-fill: var(--ann-2-fill); --sec-line: var(--ann-2-line); --sec-ink: var(--ann-2-ink); }
+.cv-section[data-tone='3'] { --sec-fill: var(--ann-3-fill); --sec-line: var(--ann-3-line); --sec-ink: var(--ann-3-ink); }
+.cv-section[data-tone='4'] { --sec-fill: var(--ann-4-fill); --sec-line: var(--ann-4-line); --sec-ink: var(--ann-4-ink); }
+.cv-section[data-tone='5'] { --sec-fill: var(--ann-5-fill); --sec-line: var(--ann-5-line); --sec-ink: var(--ann-5-ink); }
+.cv-section[data-tone='6'] { --sec-fill: var(--ann-6-fill); --sec-line: var(--ann-6-line); --sec-ink: var(--ann-6-ink); }
+.cv-section[data-tone='7'] { --sec-fill: var(--ann-7-fill); --sec-line: var(--ann-7-line); --sec-ink: var(--ann-7-ink); }
+.cv-section[data-tone='8'] { --sec-fill: var(--ann-8-fill); --sec-line: var(--ann-8-line); --sec-ink: var(--ann-8-ink); }
+.cv-section[data-tone='9'] { --sec-fill: var(--ann-9-fill); --sec-line: var(--ann-9-line); --sec-ink: var(--ann-9-ink); }
+.cv-section[data-tone='10'] { --sec-fill: var(--ann-10-fill); --sec-line: var(--ann-10-line); --sec-ink: var(--ann-10-ink); }
+.cv-section[data-tone='11'] { --sec-fill: var(--ann-11-fill); --sec-line: var(--ann-11-line); --sec-ink: var(--ann-11-ink); }
+.cv-section[data-tone='12'] { --sec-fill: var(--ann-12-fill); --sec-line: var(--ann-12-line); --sec-ink: var(--ann-12-ink); }
+
+.cv-section-draw {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+}
+
+/* Marquee-select, in progress (shift/ctrl-drag over empty background). */
+.cv-marquee {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1px;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+
+/* --------------------------------------------------------------------------
+   Notes (in front of nodes)
+   -------------------------------------------------------------------------- */
+
+.cv-note-hit {
+  fill: transparent;
+  cursor: move;
+}
+
+.cv-note-text {
+  fill: var(--text);
+  pointer-events: none;
+  white-space: pre;
+}
+
+.cv-note.is-sm .cv-note-text {
+  font-size: 12px;
+  font-weight: 450;
+}
+
+.cv-note.is-md .cv-note-text {
+  font-size: 16px;
+  font-weight: 450;
+}
+
+.cv-note.is-lg .cv-note-text {
+  font-size: 24px;
+  font-weight: 550;
+}
+
+.cv-note.is-bold .cv-note-text {
+  font-weight: 700;
+}
+
+.cv-note.is-italic .cv-note-text {
+  font-style: italic;
+}
+
+.cv-note.is-underline .cv-note-text {
+  text-decoration: underline;
+}
+
+.cv-note[data-font='sans'] .cv-note-text {
+  font-family: var(--sans);
+}
+
+.cv-note[data-font='mono'] .cv-note-text {
+  font-family: var(--mono);
+}
+
+.cv-note[data-font='hand'] .cv-note-text {
+  font-family: var(--hand);
+}
+
+.cv-note[data-font='serif'] .cv-note-text {
+  font-family: var(--serif);
+}
+
+.cv-note[data-tone='0'] .cv-note-text { fill: var(--ann-0-ink); }
+.cv-note[data-tone='1'] .cv-note-text { fill: var(--ann-1-ink); }
+.cv-note[data-tone='2'] .cv-note-text { fill: var(--ann-2-ink); }
+.cv-note[data-tone='3'] .cv-note-text { fill: var(--ann-3-ink); }
+.cv-note[data-tone='4'] .cv-note-text { fill: var(--ann-4-ink); }
+.cv-note[data-tone='5'] .cv-note-text { fill: var(--ann-5-ink); }
+.cv-note[data-tone='6'] .cv-note-text { fill: var(--ann-6-ink); }
+.cv-note[data-tone='7'] .cv-note-text { fill: var(--ann-7-ink); }
+.cv-note[data-tone='8'] .cv-note-text { fill: var(--ann-8-ink); }
+.cv-note[data-tone='9'] .cv-note-text { fill: var(--ann-9-ink); }
+.cv-note[data-tone='10'] .cv-note-text { fill: var(--ann-10-ink); }
+.cv-note[data-tone='11'] .cv-note-text { fill: var(--ann-11-ink); }
+.cv-note[data-tone='12'] .cv-note-text { fill: var(--ann-12-ink); }
+
+/* --------------------------------------------------------------------------
+   Annotation selection chrome (top layer: ring + resize handles)
+   -------------------------------------------------------------------------- */
+
+.cv-ann-sel {
+  pointer-events: none;
+}
+
+.cv-ann-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+}
+
+.cv-handle {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+}
+
+.cv-handle-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.cv-handle-hit[data-hit='section-resize'] {
+  cursor: nwse-resize;
+}
+
+.cv-handle-hit[data-dir='n'],
+.cv-handle-hit[data-dir='s'] {
+  cursor: ns-resize;
+}
+
+.cv-handle-hit[data-dir='e'],
+.cv-handle-hit[data-dir='w'] {
+  cursor: ew-resize;
+}
+
+.cv-handle-hit[data-dir='ne'],
+.cv-handle-hit[data-dir='sw'] {
+  cursor: nesw-resize;
+}
+
+.cv-handle-hit[data-dir='nw'],
+.cv-handle-hit[data-dir='se'] {
+  cursor: nwse-resize;
+}
+
+.cv-sec-tone-swatch {
+  pointer-events: all;
+  cursor: pointer;
+  fill: var(--sec-line, var(--ann-12-line));
+  stroke: var(--surface);
+  stroke-width: 1.5px;
+}
+
+/* --------------------------------------------------------------------------
+   Floating HTML chrome. Every one of these carries [data-chrome], the
+   AGENTS.md "Canvas" rule for anything that must not be swallowed by the
+   surface's pointer router (belt-and-braces here: these are DOM siblings of
+   .cv-surface, so their events never reach it regardless -- see
+   Canvas.svelte's header comment).
+   -------------------------------------------------------------------------- */
+
+.cv-tool-hint {
+  position: absolute;
+  top: var(--sp-3);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  border: var(--bw) solid var(--border);
+  box-shadow: var(--shadow-md);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.cv-note-editor,
+.cv-section-label-editor,
+.cv-node-rename-editor {
+  position: absolute;
+  z-index: 10;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  outline: none;
+  padding: 2px 4px;
+}
+
+.cv-note-editor {
+  font-family: var(--sans);
+  line-height: 1.375;
+  resize: none;
+  min-height: 1.5em;
+}
+
+.cv-section-label-editor {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: var(--fw-med);
+  height: 24px;
+}
+
+.cv-node-rename-editor {
+  font-family: var(--sans);
+  font-weight: var(--fw-med);
+}
+
+.cv-zoom-readout {
+  position: absolute;
+  bottom: var(--sp-3);
+  left: var(--sp-3);
+  z-index: 8;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  border: var(--bw) solid var(--border);
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-label);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* --------------------------------------------------------------------------
+   Reduced motion
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .cv-edge-flow {
+    animation: none;
+  }
+
+  .cv-meter-fill {
+    transition: none;
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "id": "specialised-stores",
+  "name": "Specialised stores",
+  "tagline": "The right store for each job, side by side",
+  "description": "Search, vectors, graph, blobs, metrics and an archive tier, each store built for one job. Watch which one saturates first, and which fails without a sound.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 3000, "retries": 0, "rps": 240,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "batch", "kind": "client", "label": "Batch Jobs", "x": 40, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 6,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "lb", "kind": "lb", "label": "Load Balancer", "x": 300, "y": 190,
+        "config": {
+          "capacity": 512, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.2, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "archive-q", "kind": "queue", "label": "Archive Queue", "x": 300, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 5000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "search-api", "kind": "service", "label": "Search API", "x": 560, "y": 60,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "recs-api", "kind": "service", "label": "Recs API", "x": 560, "y": 190,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "media-api", "kind": "service", "label": "Media API", "x": 560, "y": 320,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "archiver", "kind": "worker", "label": "Archiver", "x": 560, "y": 514,
+        "config": {
+          "capacity": 2, "instances": 1, "serviceMs": 40, "serviceCv": 0.4, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "search", "kind": "searchindex", "label": "Search Index", "x": 820, "y": 60,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "indexMs": 60, "indexLagMs": 1500,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "vectors", "kind": "vectordb", "label": "Vector Index", "x": 820, "y": 190,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "indexSizeK": 1000, "recallTarget": 0.9,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "blobs", "kind": "objectstore", "label": "Object Storage", "x": 820, "y": 320,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 90, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "prefixRps": 150,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "glacier", "kind": "coldstorage", "label": "Cold Storage", "x": 820, "y": 514,
+        "config": {
+          "capacity": 24, "instances": 1, "serviceMs": 2800, "serviceCv": 0.3, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "social", "kind": "graphdb", "label": "Social Graph", "x": 1080, "y": 60,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "traversalDepth": 2,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "metrics", "kind": "timeseriesdb", "label": "Metrics Store", "x": 1080, "y": 320,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 1.5, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rangeQueryFraction": 0.05, "rangeQueryMs": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->lb", "from": "client", "to": "lb", "weight": 1 },
+      { "id": "lb->search-api", "from": "lb", "to": "search-api", "weight": 1 },
+      { "id": "lb->recs-api", "from": "lb", "to": "recs-api", "weight": 1 },
+      { "id": "lb->media-api", "from": "lb", "to": "media-api", "weight": 1 },
+      { "id": "search-api->search", "from": "search-api", "to": "search", "weight": 1 },
+      { "id": "search-api->metrics", "from": "search-api", "to": "metrics", "weight": 1 },
+      { "id": "recs-api->vectors", "from": "recs-api", "to": "vectors", "weight": 1 },
+      { "id": "recs-api->social", "from": "recs-api", "to": "social", "weight": 1 },
+      { "id": "recs-api->metrics", "from": "recs-api", "to": "metrics", "weight": 1 },
+      { "id": "media-api->blobs", "from": "media-api", "to": "blobs", "weight": 1 },
+      { "id": "media-api->metrics", "from": "media-api", "to": "metrics", "weight": 1 },
+      { "id": "batch->archive-q", "from": "batch", "to": "archive-q", "weight": 1 },
+      { "id": "archive-q->archiver", "from": "archive-q", "to": "archiver", "weight": 1 },
+      { "id": "archiver->glacier", "from": "archiver", "to": "glacier", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "ss-sec-stores", "kind": "section", "label": "A different store for each question",
+        "x": 532, "y": 44, "width": 760, "height": 380, "tone": 0
+      },
+      {
+        "id": "ss-sec-arch", "kind": "section", "label": "Moving old data somewhere cheaper",
+        "x": 12, "y": 498, "width": 1020, "height": 120, "tone": 2
+      },
+      {
+        "id": "ss-note-stores", "kind": "note",
+        "text": "One general purpose database would do all of this badly. A text index, a vector index and a graph each answer a question the others are slow at, and the price is four stores to run instead of one.",
+        "x": 1320, "y": 40, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "ss-note-lesson", "kind": "note",
+        "text": "Take the load to 4x. The vector index saturates and the client sees the errors immediately. The archive path saturates too and says nothing: the batch client is still acked while cold storage sheds behind the queue.",
+        "x": 1320, "y": 296, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "ss-note-cold", "kind": "note",
+        "text": "Cold storage is slow on purpose, seconds per restore, because almost nothing is ever read back. Paying for fast storage you never read is the mistake this avoids.",
+        "x": 16, "y": 296, "width": 236, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

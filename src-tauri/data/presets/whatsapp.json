@@ -1,0 +1,187 @@
+{
+  "id": "whatsapp",
+  "name": "WhatsApp: store and forward",
+  "tagline": "Messages that wait instead of failing",
+  "description": "A simplified reconstruction of WhatsApp from Rick Reed's Erlang scaling talks; numbers are illustrative. The chat core is deliberately tiny and nearly idle: one routing hop, then online recipients get pushed and offline ones park in the Mnesia store until they reconnect, so senders essentially cannot fail. At 4x undelivered messages pile up by the hundreds per second with zero errors, and the gateway runs out of held connections, not requests. Watch the queue depth, not the error rate.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "phones", "kind": "client", "label": "Message Senders", "x": 40, "y": 254,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 400,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "router", "kind": "service", "label": "Erlang Router", "x": 300, "y": 254,
+        "config": {
+          "capacity": 48, "instances": 1, "serviceMs": 1.5, "serviceCv": 0.3, "queueLimit": 512,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "lookup", "kind": "lb", "label": "Recipient Lookup (70% online)", "x": 560, "y": 254,
+        "config": {
+          "capacity": 256, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.2, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "push", "kind": "service", "label": "Push to Connected", "x": 820, "y": 254,
+        "config": {
+          "capacity": 32, "instances": 1, "serviceMs": 2, "serviceCv": 0.4, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "offlineq", "kind": "queue", "label": "Offline Store (Mnesia)", "x": 820, "y": 384,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 20000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "drain", "kind": "worker", "label": "Deliver on Reconnect", "x": 1080, "y": 384,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 20, "serviceCv": 0.5, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "midnight", "kind": "cron", "label": "Midnight Spike", "x": 40, "y": 384,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "intervalMs": 30000, "batchSize": 600,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "churn", "kind": "client", "label": "Phones Connecting", "x": 40, "y": 60,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 45,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "wsgw", "kind": "websocket", "label": "Chat Gateway (Erlang)", "x": 300, "y": 60,
+        "config": {
+          "capacity": 1800, "instances": 1, "serviceMs": 4, "serviceCv": 0.4, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "connectionMs": 30000,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "session", "kind": "db", "label": "Session Store (Mnesia)", "x": 560, "y": 60,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 3, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "mediaup", "kind": "client", "label": "Media Uploads", "x": 40, "y": 578,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 4000, "retries": 0, "rps": 25,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "mediasvc", "kind": "service", "label": "Media HTTP Service", "x": 300, "y": 578,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 25, "serviceCv": 0.5, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "blob", "kind": "objectstore", "label": "Media Blob Store", "x": 560, "y": 578,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 90, "serviceCv": 0.4, "queueLimit": 512,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "prefixRps": 150,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "mediadl", "kind": "client", "label": "Media Downloads", "x": 40, "y": 708,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 80,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "mediacdn", "kind": "cdn", "label": "Media Cache", "x": 300, "y": 708,
+        "config": {
+          "capacity": 128, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 1024,
+          "hitRate": 0.6, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "phones->router", "from": "phones", "to": "router", "weight": 1 },
+      { "id": "midnight->router", "from": "midnight", "to": "router", "weight": 1 },
+      { "id": "router->lookup", "from": "router", "to": "lookup", "weight": 1 },
+      { "id": "lookup->push", "from": "lookup", "to": "push", "weight": 7 },
+      { "id": "lookup->offlineq", "from": "lookup", "to": "offlineq", "weight": 3 },
+      { "id": "offlineq->drain", "from": "offlineq", "to": "drain", "weight": 1 },
+      { "id": "churn->wsgw", "from": "churn", "to": "wsgw", "weight": 1 },
+      { "id": "wsgw->session", "from": "wsgw", "to": "session", "weight": 1 },
+      { "id": "mediaup->mediasvc", "from": "mediaup", "to": "mediasvc", "weight": 1 },
+      { "id": "mediasvc->blob", "from": "mediasvc", "to": "blob", "weight": 1 },
+      { "id": "mediadl->mediacdn", "from": "mediadl", "to": "mediacdn", "weight": 1 },
+      { "id": "mediacdn->blob", "from": "mediacdn", "to": "blob", "weight": 1 }
+    ],
+    "annotations": [
+      { "id": "wa-sec-conn", "kind": "section", "label": "Keeping phones connected", "x": 12, "y": 44, "width": 760, "height": 120, "tone": 0 },
+      { "id": "wa-sec-route", "kind": "section", "label": "Sending a message, or parking it", "x": 272, "y": 238, "width": 1020, "height": 250, "tone": 1 },
+      { "id": "wa-sec-media", "kind": "section", "label": "Photos and video, on their own path", "x": 12, "y": 562, "width": 760, "height": 250, "tone": 2 },
+      {
+        "id": "wa-note-conn", "kind": "note",
+        "text": "What runs out here is open connections, not requests. 45 phones connect a second and each holds on for 30 seconds, filling 1350 of the 1800 slots. This box is run deliberately hot, because connections were the entire cost of the system.",
+        "x": 800, "y": 16, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "wa-note-route", "kind": "note",
+        "text": "The router does almost nothing per message: it cannot even read them. At 400 a second it is about one percent busy. Simple and small beat big here, and that was the point.",
+        "x": 1320, "y": 232, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "wa-note-store", "kind": "note",
+        "text": "Turn the load up to 4x and watch the offline store, not the error rate. A message to a phone that is not online parks here until it reconnects, so senders keep succeeding while undelivered messages pile up by the hundreds a second.",
+        "x": 1320, "y": 472, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "wa-note-media", "kind": "note",
+        "text": "Photos and video ride a separate path and never touch the chat core, so a media outage leaves messaging alone.",
+        "x": 800, "y": 568, "width": 236, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "id": "resilient-delivery",
+  "name": "Resilient delivery",
+  "tagline": "Choosing what fails, and where failures go",
+  "description": "Failing on purpose: a shedder drops the traffic that matters least, a bulkhead contains a slow dependency, retried deliveries land on a dead letter shelf, and a write-behind buffer trades durability for speed.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 240,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "shedder", "kind": "loadshedder", "label": "Load Shedder", "x": 300, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 700, "burst": 700, "lowPriorityShare": 0.3, "priorityReserve": 0.3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 560, "y": 190,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "bulkhead", "kind": "bulkhead", "label": "Recs Bulkhead", "x": 820, "y": 60,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "bulkheadMax": 12,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "recs", "kind": "service", "label": "Recommendations", "x": 1080, "y": 60,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 15, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "writebuf", "kind": "writebehind", "label": "Write-Behind Cache", "x": 820, "y": 190,
+        "config": {
+          "capacity": 256, "instances": 1, "serviceMs": 1, "serviceCv": 0.3, "queueLimit": 512,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "flushDelayMs": 200,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 1080, "y": 190,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 15, "serviceCv": 0.6, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "retryq", "kind": "retryqueue", "label": "Notify Queue", "x": 820, "y": 320,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 3, "serviceCv": 0.3, "queueLimit": 2000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 1000, "retries": 2, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "notify", "kind": "service", "label": "Notification Service", "x": 1080, "y": 320,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 12, "serviceCv": 0.5, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0.15, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "uploader", "kind": "client", "label": "Upload Client", "x": 40, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 4000, "retries": 0, "rps": 3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "encodeq", "kind": "queue", "label": "Encode Queue", "x": 300, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 5000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "transcoder", "kind": "transcoder", "label": "Transcoder Farm", "x": 560, "y": 514,
+        "config": {
+          "capacity": 2, "instances": 2, "serviceMs": 1200, "serviceCv": 0.3, "queueLimit": 8,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "renditions": 3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->shedder", "from": "client", "to": "shedder", "weight": 1 },
+      { "id": "shedder->api", "from": "shedder", "to": "api", "weight": 1 },
+      { "id": "api->bulkhead", "from": "api", "to": "bulkhead", "weight": 1 },
+      { "id": "api->writebuf", "from": "api", "to": "writebuf", "weight": 1 },
+      { "id": "api->retryq", "from": "api", "to": "retryq", "weight": 1 },
+      { "id": "bulkhead->recs", "from": "bulkhead", "to": "recs", "weight": 1 },
+      { "id": "writebuf->db", "from": "writebuf", "to": "db", "weight": 1 },
+      { "id": "retryq->notify", "from": "retryq", "to": "notify", "weight": 1 },
+      { "id": "uploader->encodeq", "from": "uploader", "to": "encodeq", "weight": 1 },
+      { "id": "encodeq->transcoder", "from": "encodeq", "to": "transcoder", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "rd-sec-live", "kind": "section", "label": "Failing on purpose, not by surprise",
+        "x": 272, "y": 44, "width": 1020, "height": 380, "tone": 0
+      },
+      {
+        "id": "rd-sec-batch", "kind": "section", "label": "Work that can wait",
+        "x": 12, "y": 498, "width": 760, "height": 120, "tone": 2
+      },
+      {
+        "id": "rd-note-shed", "kind": "note",
+        "text": "At 4x the shedder drops the traffic marked best effort and keeps serving the rest. Choosing what to drop beats letting a queue choose for you.",
+        "x": 16, "y": 16, "width": 236, "size": "md", "font": "hand"
+      },
+      {
+        "id": "rd-note-bulkhead", "kind": "note",
+        "text": "Right click recommendations and inject slow. The bulkhead in front fills within one round trip, and after that the extra calls fail in microseconds instead of queueing. One slow feature stops being everyone else's problem.",
+        "x": 1320, "y": 40, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "rd-note-writebuf", "kind": "note",
+        "text": "The write cache acks in about a millisecond and flushes 200ms later, so roughly 50 rows are always acknowledged but not yet stored. Crash it and exactly that many writes are gone.",
+        "x": 1320, "y": 264, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "rd-note-batch", "kind": "note",
+        "text": "The transcoders drain about 3.3 jobs a second against 3 arriving, so they are already 90 percent busy at rest. Turn the load up and the backlog grows about 9 jobs every second and never drains on its own. Raise the number of instances to fix it.",
+        "x": 800, "y": 496, "width": 300, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

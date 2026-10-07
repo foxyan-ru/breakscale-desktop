@@ -1,0 +1,48 @@
+{
+  "id": "read-replicas",
+  "name": "Read replicas",
+  "tagline": "Reads that scale, and reads that go stale",
+  "description": "Replicas scale reads but not writes, and a read can arrive before the write it should have seen.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 300,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 300, "y": 190,
+        "config": {
+          "capacity": 32, "instances": 1, "serviceMs": 5, "serviceCv": 0.4, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "replicas", "kind": "replica", "label": "Replica Set", "x": 560, "y": 190,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 20, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 60, "readFraction": 0.85,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->api", "from": "client", "to": "api", "weight": 1 },
+      { "id": "api->replicas", "from": "api", "to": "replicas", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "rr-note-writes", "kind": "note",
+        "text": "Copies give you read capacity and nothing else: 600 reads a second across three of them, but still only 200 writes against the one primary. Adding copies fixes one of those and does nothing at all for the other.",
+        "x": 40, "y": 320, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

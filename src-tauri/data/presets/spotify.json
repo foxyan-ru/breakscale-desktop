@@ -1,0 +1,252 @@
+{
+  "id": "spotify",
+  "name": "Spotify: music and discovery",
+  "tagline": "A steady catalogue beside a heavy recommender",
+  "description": "A simplified reconstruction of Spotify from their engineering blog; numbers are illustrative. Audio flows from object storage through a CDN, apart from the metadata path. Playlist writes pin a replica primary while its read replicas idle, the event firehose outruns the royalty consumer at 4x, and every 20s the Discover Weekly batch writes the same vector index the home feed reads, so p99 breathes on the batch clock.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "listeners", "kind": "client", "label": "Listeners (audio)", "x": 40, "y": 60,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 1100,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "audiocdn", "kind": "cdn", "label": "Audio CDN", "x": 300, "y": 60,
+        "config": {
+          "capacity": 384, "instances": 1, "serviceMs": 3, "serviceCv": 0.3, "queueLimit": 4096,
+          "hitRate": 0.82, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "gcs", "kind": "objectstore", "label": "GCS Audio Storage", "x": 560, "y": 60,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 90, "serviceCv": 0.4, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "prefixRps": 150,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "app", "kind": "client", "label": "App Clients", "x": 40, "y": 384,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 220,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "gw", "kind": "apigateway", "label": "API Gateway", "x": 300, "y": 384,
+        "config": {
+          "capacity": 96, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 512,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 700, "burst": 350, "authFailRate": 0.01,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "meta", "kind": "service", "label": "Metadata Service", "x": 560, "y": 254,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "metacache", "kind": "cache", "label": "Metadata Cache", "x": 820, "y": 254,
+        "config": {
+          "capacity": 48, "instances": 1, "serviceMs": 1, "serviceCv": 0.3, "queueLimit": 512,
+          "hitRate": 0.9, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cassmeta", "kind": "db", "label": "Track Metadata DB", "x": 1080, "y": 254,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 25, "serviceCv": 0.6, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "search", "kind": "service", "label": "Search API", "x": 560, "y": 384,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "es", "kind": "searchindex", "label": "Search Index (ES)", "x": 820, "y": 384,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "indexMs": 60, "indexLagMs": 2000,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.95,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "playlist", "kind": "service", "label": "Playlist Service", "x": 560, "y": 514,
+        "config": {
+          "capacity": 10, "instances": 1, "serviceMs": 7, "serviceCv": 0.5, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "pldb", "kind": "replica", "label": "Playlist Store", "x": 820, "y": 514,
+        "config": {
+          "capacity": 3, "instances": 1, "serviceMs": 30, "serviceCv": 0.6, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 150, "readFraction": 0.55,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "recs", "kind": "service", "label": "Home & Discover Feed", "x": 560, "y": 644,
+        "config": {
+          "capacity": 10, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "vecs", "kind": "vectordb", "label": "Taste Vectors", "x": 820, "y": 644,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "indexSizeK": 1000, "recallTarget": 0.9,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "wkcron", "kind": "cron", "label": "Discover Weekly Batch", "x": 40, "y": 838,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "intervalMs": 20000, "batchSize": 300,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "featq", "kind": "queue", "label": "Feature Job Queue", "x": 300, "y": 838,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 5000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "featwork", "kind": "worker", "label": "Feature Pipeline", "x": 560, "y": 838,
+        "config": {
+          "capacity": 4, "instances": 2, "serviceMs": 22, "serviceCv": 0.4, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "events", "kind": "client", "label": "Event Firehose", "x": 40, "y": 1032,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 1500, "retries": 0, "rps": 600,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "kafka", "kind": "streambroker", "label": "Event Delivery", "x": 300, "y": 1032,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 6000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "partitions": 8,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "royalty", "kind": "service", "label": "Royalty & Reporting", "x": 560, "y": 1032,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 6, "serviceCv": 0.4, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "analytics", "kind": "timeseriesdb", "label": "Analytics Store", "x": 560, "y": 1162,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 1.5, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rangeQueryFraction": 0, "rangeQueryMs": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "listeners->audiocdn", "from": "listeners", "to": "audiocdn", "weight": 1 },
+      { "id": "audiocdn->gcs", "from": "audiocdn", "to": "gcs", "weight": 1 },
+      { "id": "app->gw", "from": "app", "to": "gw", "weight": 1 },
+      { "id": "gw->meta", "from": "gw", "to": "meta", "weight": 7 },
+      { "id": "gw->search", "from": "gw", "to": "search", "weight": 4 },
+      { "id": "gw->playlist", "from": "gw", "to": "playlist", "weight": 5 },
+      { "id": "gw->recs", "from": "gw", "to": "recs", "weight": 4 },
+      { "id": "meta->metacache", "from": "meta", "to": "metacache", "weight": 1 },
+      { "id": "metacache->cassmeta", "from": "metacache", "to": "cassmeta", "weight": 1 },
+      { "id": "search->es", "from": "search", "to": "es", "weight": 1 },
+      { "id": "playlist->pldb", "from": "playlist", "to": "pldb", "weight": 1 },
+      { "id": "recs->vecs", "from": "recs", "to": "vecs", "weight": 1 },
+      { "id": "wkcron->featq", "from": "wkcron", "to": "featq", "weight": 1 },
+      { "id": "featq->featwork", "from": "featq", "to": "featwork", "weight": 1 },
+      { "id": "featwork->vecs", "from": "featwork", "to": "vecs", "weight": 1 },
+      { "id": "events->kafka", "from": "events", "to": "kafka", "weight": 1 },
+      { "id": "kafka->royalty", "from": "kafka", "to": "royalty", "weight": 1 },
+      { "id": "kafka->analytics", "from": "kafka", "to": "analytics", "weight": 1 }
+    ],
+    "annotations": [
+      { "id": "sp-sec-audio", "kind": "section", "label": "Playing the music", "x": 12, "y": 44, "width": 760, "height": 120, "tone": 0 },
+      { "id": "sp-sec-app", "kind": "section", "label": "Everything else the app asks for", "x": 532, "y": 238, "width": 760, "height": 510, "tone": 1 },
+      { "id": "sp-sec-batch", "kind": "section", "label": "Recomputing recommendations offline", "x": 12, "y": 822, "width": 760, "height": 120, "tone": 2 },
+      { "id": "sp-sec-ev", "kind": "section", "label": "What was played, counted twice", "x": 12, "y": 1016, "width": 760, "height": 250, "tone": 3 },
+      {
+        "id": "sp-note-audio", "kind": "note",
+        "text": "Audio and everything else are separate systems. 1100 song fetches a second go to a cache near the listener, but a music catalogue has a long tail, so nearly one in five still reaches storage.",
+        "x": 1320, "y": 40, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "sp-note-playlist", "kind": "note",
+        "text": "Adding a song is a write, and writes only go to the one main copy of the playlist store. It manages about 100 a second while its two read copies sit idle. Reads also run up to 150ms behind, so a song you just added can be missing when the playlist loads back.",
+        "x": 1320, "y": 240, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "sp-note-batch", "kind": "note",
+        "text": "Watch the taste vectors. Every 20 seconds the recommendation batch writes into the same index the home feed reads from, and the slow tail on the feed rises and falls on that clock. Turn the load up and the two fight over one store.",
+        "x": 1320, "y": 528, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "sp-note-events", "kind": "note",
+        "text": "Two readers share one event stream. Turn the load up and the royalty job cannot keep up while the analytics store beside it does fine. Royalty falls behind silently, and eventually the oldest events expire before it reaches them.",
+        "x": 800, "y": 1024, "width": 300, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

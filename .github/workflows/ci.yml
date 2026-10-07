@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Nothing here writes to the repository, so start from zero and grant per job.
+permissions: {}
+
+# A new push to a PR makes the previous run irrelevant, so stop it rather than
+# paying for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # svelte-check typechecks the .svelte markup that a plain tsc run never
+  # sees, and is the only gate this package defines (there is no lint/format
+  # script here). One Linux run is the whole coverage: the check reads the
+  # same bytes on every OS, so a matrix would re-run identical work at the
+  # slowest per-minute rate. The Rust side gets its first real compilation
+  # in desktop-release.yml -- there is deliberately no `cargo check` job
+  # until a build has been run locally at least once (see README "Known
+  # limitations").
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The checkout token is not needed after clone, so do not leave it in
+          # .git/config where a later step or dependency could read it.
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Check
+        run: bun run check

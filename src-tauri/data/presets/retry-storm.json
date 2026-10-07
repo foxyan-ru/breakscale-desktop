@@ -1,0 +1,48 @@
+{
+  "id": "retry-storm",
+  "name": "Retry storm",
+  "tagline": "Retries making an overload worse",
+  "description": "A short timeout with retries in front of a small database. Retries multiply the load that caused them.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 200,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 3000, "retries": 0, "rps": 45,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 340, "y": 200,
+        "config": {
+          "capacity": 32, "instances": 1, "serviceMs": 5, "serviceCv": 0.4, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 250, "retries": 2, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 680, "y": 200,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 40, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->api", "from": "client", "to": "api", "weight": 1 },
+      { "id": "api->db", "from": "api", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "rt-note-storm", "kind": "note",
+        "text": "The database handles 100 a second. Once waiting passes the 250ms timeout on the API, every request starts retrying three times, so the load triples onto a database that was already full. It is steady at 80 a second. Push to 85 and it starts losing most of its traffic; by 90 almost none gets through.",
+        "x": 40, "y": 320, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

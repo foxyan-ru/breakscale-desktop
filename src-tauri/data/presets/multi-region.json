@@ -1,0 +1,87 @@
+{
+  "id": "multi-region",
+  "name": "Multi-region failover",
+  "tagline": "What a failover actually costs you",
+  "description": "Two regions, one serving. Crash the active one and every request fails until failover lands.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 250,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "router", "kind": "region", "label": "Region Router", "x": 300, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "regions": 2, "activeRegion": 0, "failoverMs": 5000,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "us-api", "kind": "service", "label": "US API", "x": 560, "y": 60,
+        "config": {
+          "capacity": 10, "instances": 1, "serviceMs": 25, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "eu-api", "kind": "service", "label": "EU API", "x": 560, "y": 320,
+        "config": {
+          "capacity": 10, "instances": 1, "serviceMs": 25, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "us-db", "kind": "db", "label": "US Database", "x": 820, "y": 60,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 12, "serviceCv": 0.6, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "eu-db", "kind": "db", "label": "EU Database", "x": 820, "y": 320,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 12, "serviceCv": 0.6, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->router", "from": "client", "to": "router", "weight": 1 },
+      { "id": "router->us-api", "from": "router", "to": "us-api", "weight": 1 },
+      { "id": "router->eu-api", "from": "router", "to": "eu-api", "weight": 1 },
+      { "id": "us-api->us-db", "from": "us-api", "to": "us-db", "weight": 1 },
+      { "id": "eu-api->eu-db", "from": "eu-api", "to": "eu-db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "mr-sec-us", "kind": "section", "label": "United States, taking traffic",
+        "x": 532, "y": 44, "width": 500, "height": 120, "tone": 0
+      },
+      {
+        "id": "mr-sec-eu", "kind": "section", "label": "Europe, idle until it is needed",
+        "x": 532, "y": 304, "width": 500, "height": 120, "tone": 3
+      },
+      {
+        "id": "mr-note-fail", "kind": "note",
+        "text": "Crash the US API. For five seconds every request fails while the router notices, then Europe picks it all up. Only one region takes traffic at a time, so this pair buys you survival, not extra capacity: at 4x the active region melts while the standby sits at zero.",
+        "x": 1064, "y": 40, "width": 300, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

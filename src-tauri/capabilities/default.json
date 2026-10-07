@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities granted to the main window. Deliberately minimal: no shell access, no arbitrary HTTP, no unscoped filesystem access. File reads/writes go through Tauri commands (src-tauri/src/commands) which resolve paths themselves (the app-data directory, or a path just returned by a dialog call) rather than trusting a path handed in from the frontend.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message"
+  ]
+}

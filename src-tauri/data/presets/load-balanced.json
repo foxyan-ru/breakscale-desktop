@@ -1,0 +1,109 @@
+{
+  "id": "load-balanced",
+  "name": "Load balanced",
+  "tagline": "More servers, same database behind them",
+  "description": "Three servers share the load, but they all still talk to the same database.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client",
+        "kind": "client",
+        "label": "Client",
+        "x": 40,
+        "y": 220,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 140,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "lb",
+        "kind": "lb",
+        "label": "Load Balancer",
+        "x": 260,
+        "y": 220,
+        "config": {
+          "capacity": 512, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.2, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api1",
+        "kind": "service",
+        "label": "API 1",
+        "x": 500,
+        "y": 80,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 25, "serviceCv": 0.6, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api2",
+        "kind": "service",
+        "label": "API 2",
+        "x": 500,
+        "y": 220,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 25, "serviceCv": 0.6, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api3",
+        "kind": "service",
+        "label": "API 3",
+        "x": 500,
+        "y": 360,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 25, "serviceCv": 0.6, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db",
+        "kind": "db",
+        "label": "Database",
+        "x": 800,
+        "y": 220,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 25, "serviceCv": 0.7, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->lb", "from": "client", "to": "lb", "weight": 1 },
+      { "id": "lb->api1", "from": "lb", "to": "api1", "weight": 1 },
+      { "id": "lb->api2", "from": "lb", "to": "api2", "weight": 1 },
+      { "id": "lb->api3", "from": "lb", "to": "api3", "weight": 1 },
+      { "id": "api1->db", "from": "api1", "to": "db", "weight": 1 },
+      { "id": "api2->db", "from": "api2", "to": "db", "weight": 1 },
+      { "id": "api3->db", "from": "api3", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "lb-note-db",
+        "kind": "note",
+        "text": "Three servers share one database. That triples the API capacity and does nothing for the database, which still tops out near 480 a second. Adding servers only helps when the servers were the problem.",
+        "x": 40,
+        "y": 480,
+        "width": 340,
+        "size": "md",
+        "font": "hand"
+      }
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "id": "rate-limited-api",
+  "name": "Rate limited API",
+  "tagline": "Turning excess away before it queues",
+  "description": "A limiter refuses excess traffic at the door. It serves slightly less, but what it does serve stays fast instead of queueing.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 150,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "limiter", "kind": "ratelimiter", "label": "Rate Limiter", "x": 300, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 200, "burst": 200,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Server", "x": 560, "y": 190,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 25, "serviceCv": 0.5, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 820, "y": 190,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 12, "serviceCv": 0.6, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->limiter", "from": "client", "to": "limiter", "weight": 1 },
+      { "id": "limiter->api", "from": "limiter", "to": "api", "weight": 1 },
+      { "id": "api->db", "from": "api", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "rl-note-trade", "kind": "note",
+        "text": "The limiter does not add capacity. It refuses some requests quickly so the rest are answered quickly: at 600 offered it serves 200 at 36ms, where removing it serves 234 at 235ms. Saying no fast is what buys the predictable wait.",
+        "x": 40, "y": 320, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

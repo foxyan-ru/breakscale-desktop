@@ -1,0 +1,102 @@
+{
+  "id": "single-server",
+  "name": "Single server",
+  "tagline": "Watch the database become the bottleneck",
+  "description": "One service in front of one database. Latency climbs sharply as the database fills up.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client",
+        "kind": "client",
+        "label": "Client",
+        "x": 40,
+        "y": 200,
+        "config": {
+          "capacity": 1,
+          "instances": 1,
+          "serviceMs": 0,
+          "serviceCv": 0,
+          "queueLimit": 0,
+          "hitRate": 0,
+          "errorRate": 0,
+          "timeoutMs": 2000,
+          "retries": 0,
+          "rps": 50,
+          "replicaCount": 3,
+          "replicationLagMs": 50,
+          "readFraction": 0.9,
+          "shardCount": 4,
+          "shardCapacity": 4,
+          "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api",
+        "kind": "service",
+        "label": "API Server",
+        "x": 340,
+        "y": 200,
+        "config": {
+          "capacity": 8,
+          "instances": 1,
+          "serviceMs": 25,
+          "serviceCv": 0.6,
+          "queueLimit": 64,
+          "hitRate": 0,
+          "errorRate": 0,
+          "timeoutMs": 0,
+          "retries": 0,
+          "rps": 0,
+          "replicaCount": 3,
+          "replicationLagMs": 50,
+          "readFraction": 0.9,
+          "shardCount": 4,
+          "shardCapacity": 4,
+          "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db",
+        "kind": "db",
+        "label": "Database",
+        "x": 660,
+        "y": 200,
+        "config": {
+          "capacity": 6,
+          "instances": 1,
+          "serviceMs": 30,
+          "serviceCv": 0.7,
+          "queueLimit": 48,
+          "hitRate": 0,
+          "errorRate": 0,
+          "timeoutMs": 0,
+          "retries": 0,
+          "rps": 0,
+          "lockMs": 15,
+          "replicaCount": 3,
+          "replicationLagMs": 50,
+          "readFraction": 0.9,
+          "shardCount": 4,
+          "shardCapacity": 4,
+          "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->api", "from": "client", "to": "api", "weight": 1 },
+      { "id": "api->db", "from": "api", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "ss-note-db",
+        "kind": "note",
+        "text": "One server, one database. The database is the smaller of the two: 6 requests at a time at 30ms each, so it runs out near 200 a second. Drag the load past 4x and the wait builds there first, not at the API.",
+        "x": 40,
+        "y": 320,
+        "width": 340,
+        "size": "md",
+        "font": "hand"
+      }
+    ]
+  }
+}

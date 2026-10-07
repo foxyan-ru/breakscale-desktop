@@ -1,0 +1,248 @@
+{
+  "id": "netflix",
+  "name": "Netflix: streaming at scale",
+  "tagline": "Almost everything served from the edge",
+  "description": "A simplified reconstruction of Netflix from their tech blog; numbers are illustrative. Open Connect appliances inside ISPs serve ~96% of the bytes, so streaming barely touches the cloud; the control plane behind Zuul is where 4x hurts: licensing trips its Hystrix breaker, the recs bulkhead fills, Keystone quietly falls behind, and the encode farm backlog grows while viewers stream on.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "viewers", "kind": "client", "label": "Stream Viewers", "x": 40, "y": 60,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 1500,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "oca", "kind": "cdn", "label": "Open Connect OCA", "x": 300, "y": 60,
+        "config": {
+          "capacity": 512, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 4096,
+          "hitRate": 0.96, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "s3", "kind": "objectstore", "label": "S3 Origin (fill)", "x": 820, "y": 60,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 90, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "prefixRps": 150,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "studio", "kind": "client", "label": "Studio Ingest", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 3000, "retries": 0, "rps": 2,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cosmosq", "kind": "queue", "label": "Cosmos Job Queue", "x": 300, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 5000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "ves", "kind": "transcoder", "label": "VES Encode Farm", "x": 560, "y": 190,
+        "config": {
+          "capacity": 2, "instances": 2, "serviceMs": 1500, "serviceCv": 0.3, "queueLimit": 8,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "renditions": 3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "atlas", "kind": "timeseriesdb", "label": "Atlas Telemetry", "x": 820, "y": 190,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 1.5, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rangeQueryFraction": 0.03, "rangeQueryMs": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "capi", "kind": "client", "label": "Device API Calls", "x": 40, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 240,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "zuul", "kind": "apigateway", "label": "Zuul 2 Gateway", "x": 300, "y": 514,
+        "config": {
+          "capacity": 96, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 512,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 1200, "burst": 600, "authFailRate": 0.005,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "playapi", "kind": "service", "label": "PlayAPI", "x": 560, "y": 384,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 600, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "hystrix", "kind": "breaker", "label": "Hystrix Breaker", "x": 820, "y": 384,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "errorThreshold": 0.4, "windowMs": 4000, "openMs": 4000, "halfOpenProbes": 3,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "license", "kind": "service", "label": "DRM License Svc", "x": 1080, "y": 384,
+        "config": {
+          "capacity": 5, "instances": 1, "serviceMs": 18, "serviceCv": 0.5, "queueLimit": 24,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "evcache", "kind": "cache", "label": "EVCache (viewing)", "x": 820, "y": 514,
+        "config": {
+          "capacity": 48, "instances": 1, "serviceMs": 1, "serviceCv": 0.3, "queueLimit": 512,
+          "hitRate": 0.9, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cassandra", "kind": "shard", "label": "Cassandra Ring", "x": 1080, "y": 514,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 35, "serviceCv": 0.6, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 2, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "keystone", "kind": "streambroker", "label": "Keystone Pipeline", "x": 820, "y": 644,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 4000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "partitions": 6,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "history", "kind": "service", "label": "Viewing History", "x": 1080, "y": 644,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 20, "serviceCv": 0.5, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "browse", "kind": "service", "label": "Browse API", "x": 560, "y": 838,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 96,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "recsbh", "kind": "bulkhead", "label": "Recs Bulkhead", "x": 820, "y": 838,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "bulkheadMax": 10,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "recs", "kind": "service", "label": "Personalisation", "x": 1080, "y": 838,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 20, "serviceCv": 0.5, "queueLimit": 48,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "evrecs", "kind": "cache", "label": "EVCache (recs)", "x": 1340, "y": 838,
+        "config": {
+          "capacity": 48, "instances": 1, "serviceMs": 1, "serviceCv": 0.3, "queueLimit": 256,
+          "hitRate": 0.97, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "viewers->oca", "from": "viewers", "to": "oca", "weight": 1 },
+      { "id": "oca->s3", "from": "oca", "to": "s3", "weight": 1 },
+      { "id": "studio->cosmosq", "from": "studio", "to": "cosmosq", "weight": 1 },
+      { "id": "cosmosq->ves", "from": "cosmosq", "to": "ves", "weight": 1 },
+      { "id": "ves->s3", "from": "ves", "to": "s3", "weight": 1 },
+      { "id": "capi->zuul", "from": "capi", "to": "zuul", "weight": 1 },
+      { "id": "zuul->playapi", "from": "zuul", "to": "playapi", "weight": 3 },
+      { "id": "zuul->browse", "from": "zuul", "to": "browse", "weight": 2 },
+      { "id": "playapi->hystrix", "from": "playapi", "to": "hystrix", "weight": 1 },
+      { "id": "hystrix->license", "from": "hystrix", "to": "license", "weight": 1 },
+      { "id": "playapi->evcache", "from": "playapi", "to": "evcache", "weight": 1 },
+      { "id": "evcache->cassandra", "from": "evcache", "to": "cassandra", "weight": 1 },
+      { "id": "playapi->keystone", "from": "playapi", "to": "keystone", "weight": 1 },
+      { "id": "playapi->atlas", "from": "playapi", "to": "atlas", "weight": 1 },
+      { "id": "keystone->history", "from": "keystone", "to": "history", "weight": 1 },
+      { "id": "browse->recsbh", "from": "browse", "to": "recsbh", "weight": 1 },
+      { "id": "recsbh->recs", "from": "recsbh", "to": "recs", "weight": 1 },
+      { "id": "recs->evrecs", "from": "recs", "to": "evrecs", "weight": 1 }
+    ],
+    "annotations": [
+      { "id": "nf-sec-bytes", "kind": "section", "label": "Moving the video", "x": 12, "y": 44, "width": 1020, "height": 250, "tone": 0 },
+      { "id": "nf-sec-edge", "kind": "section", "label": "Where API calls arrive", "x": 12, "y": 498, "width": 500, "height": 120, "tone": 1 },
+      { "id": "nf-sec-play", "kind": "section", "label": "Starting a stream", "x": 532, "y": 368, "width": 760, "height": 380, "tone": 2 },
+      { "id": "nf-sec-recs", "kind": "section", "label": "Browsing, kept separate", "x": 532, "y": 822, "width": 1020, "height": 120, "tone": 3 },
+      {
+        "id": "nf-note-bytes", "kind": "note",
+        "text": "1500 requests a second of video, and 240 of everything else. The video almost never reaches Netflix: the edge cache answers 96 percent of it from inside your ISP.",
+        "x": 1080, "y": 64, "width": 380, "size": "md", "font": "hand"
+      },
+      {
+        "id": "nf-note-encode", "kind": "note",
+        "text": "Encoding is slow and that is fine. Jobs wait in a queue and nobody is watching a spinner, so seconds here cost nothing.",
+        "x": 1080, "y": 216, "width": 380, "size": "md", "font": "hand"
+      },
+      {
+        "id": "nf-note-license", "kind": "note",
+        "text": "The bottleneck is the licence service, not the video. It has 5 slots at 18ms, so it runs out at about 280 requests a second. Raise the load and watch it fill before anything else does.",
+        "x": 40, "y": 360, "width": 440, "size": "md", "font": "hand"
+      },
+      {
+        "id": "nf-note-breaker", "kind": "note",
+        "text": "The breaker in front of it is what stops one slow service from holding every request open. Trip it and playback fails fast instead of hanging.",
+        "x": 40, "y": 648, "width": 440, "size": "md", "font": "hand"
+      },
+      {
+        "id": "nf-note-recs", "kind": "note",
+        "text": "Recommendations sit behind a bulkhead, so if they get slow the play path is untouched. Browsing breaking is survivable; playback breaking is not.",
+        "x": 40, "y": 840, "width": 440, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

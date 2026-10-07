@@ -1,0 +1,203 @@
+{
+  "id": "event-driven",
+  "name": "Event-driven backend",
+  "tagline": "Lag, fan-out, cold starts and a cron burst",
+  "description": "A stream with two consumer groups, a fan-out topic, a websocket tier, a sidecar, a lambda and a cron burst. Watch consumer lag grow, cold starts spike on the quarter-minute, and connections, not requests, run out.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "API Clients", "x": 40, "y": 140,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 60,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "gw", "kind": "apigateway", "label": "API Gateway", "x": 250, "y": 140,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 150, "burst": 150, "authFailRate": 0.01,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "api", "kind": "service", "label": "API Service", "x": 470, "y": 140,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "broker", "kind": "streambroker", "label": "Event Stream", "x": 700, "y": 60,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 2000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "partitions": 4,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "indexer", "kind": "service", "label": "Search Indexer", "x": 930, "y": 20,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 55, "serviceCv": 0.6, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "billing", "kind": "service", "label": "Billing", "x": 930, "y": 130,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 12, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "topic", "kind": "pubsub", "label": "Fan-out Topic", "x": 700, "y": 230,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.2, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "push", "kind": "service", "label": "Push Notifs", "x": 930, "y": 240,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "audit", "kind": "service", "label": "Audit Log", "x": 930, "y": 350,
+        "config": {
+          "capacity": 2, "instances": 1, "serviceMs": 40, "serviceCv": 0.6, "queueLimit": 24,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "metrics", "kind": "service", "label": "Metrics", "x": 930, "y": 460,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 5, "serviceCv": 0.4, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "chat", "kind": "client", "label": "Chat Clients", "x": 40, "y": 420,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 30,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "ws", "kind": "websocket", "label": "WS Gateway", "x": 250, "y": 420,
+        "config": {
+          "capacity": 400, "instances": 1, "serviceMs": 5, "serviceCv": 0.4, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "connectionMs": 8000,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "mesh", "kind": "sidecar", "label": "Chat Sidecar", "x": 470, "y": 420,
+        "config": {
+          "capacity": 32, "instances": 1, "serviceMs": 2, "serviceCv": 0.2, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 500, "retries": 2, "rps": 0,
+          "outlierAfter": 5, "openMs": 3000,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "chatsvc", "kind": "service", "label": "Chat Service", "x": 690, "y": 420,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 12, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cron", "kind": "cron", "label": "Nightly Report", "x": 40, "y": 560,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "intervalMs": 15000, "batchSize": 40,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "fn", "kind": "lambda", "label": "Report Fn", "x": 300, "y": 560,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 25, "serviceCv": 0.5, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "coldStartMs": 350, "keepWarmMs": 10000, "maxConcurrency": 30,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 560, "y": 560,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 20, "serviceCv": 0.6, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->gw", "from": "client", "to": "gw", "weight": 1 },
+      { "id": "gw->api", "from": "gw", "to": "api", "weight": 3 },
+      { "id": "gw->fn", "from": "gw", "to": "fn", "weight": 1 },
+      { "id": "api->broker", "from": "api", "to": "broker", "weight": 1 },
+      { "id": "api->topic", "from": "api", "to": "topic", "weight": 1 },
+      { "id": "broker->indexer", "from": "broker", "to": "indexer", "weight": 1 },
+      { "id": "broker->billing", "from": "broker", "to": "billing", "weight": 1 },
+      { "id": "topic->push", "from": "topic", "to": "push", "weight": 1 },
+      { "id": "topic->audit", "from": "topic", "to": "audit", "weight": 1 },
+      { "id": "topic->metrics", "from": "topic", "to": "metrics", "weight": 1 },
+      { "id": "chat->ws", "from": "chat", "to": "ws", "weight": 1 },
+      { "id": "ws->mesh", "from": "ws", "to": "mesh", "weight": 1 },
+      { "id": "mesh->chatsvc", "from": "mesh", "to": "chatsvc", "weight": 1 },
+      { "id": "cron->fn", "from": "cron", "to": "fn", "weight": 1 },
+      { "id": "fn->db", "from": "fn", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "ed-note-sync", "kind": "note",
+        "text": "Everything on the left is a caller waiting for an answer. Everything on the right runs after that answer was already sent.",
+        "x": 16, "y": 248, "width": 236, "size": "md", "font": "hand"
+      },
+      {
+        "id": "ed-note-fanout", "kind": "note",
+        "text": "One event becomes five pieces of work here, each read by its own consumer. Turn the load up and watch the audit log: it takes 40ms a message and falls behind while the four beside it keep up, and nobody calling the API sees a thing.",
+        "x": 1160, "y": 16, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "ed-note-cold", "kind": "note",
+        "text": "The report function starts cold. The first call after a quiet spell pays 350ms of startup, then stays warm for ten seconds. Watch the first burst after the timer fires.",
+        "x": 16, "y": 680, "width": 236, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

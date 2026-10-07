@@ -1,0 +1,58 @@
+{
+  "id": "cdn-origin",
+  "name": "CDN and origin",
+  "tagline": "How much traffic never reaches you",
+  "description": "The CDN answers most requests at the edge, so only a trickle reaches the origin. Drop the hit rate and watch the origin melt.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "client", "kind": "client", "label": "Client", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 400,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cdn", "kind": "cdn", "label": "CDN Edge", "x": 300, "y": 190,
+        "config": {
+          "capacity": 256, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 2048,
+          "hitRate": 0.9, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "origin", "kind": "service", "label": "Origin Server", "x": 560, "y": 190,
+        "config": {
+          "capacity": 3, "instances": 1, "serviceMs": 25, "serviceCv": 0.6, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "db", "kind": "db", "label": "Database", "x": 820, "y": 190,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 10, "serviceCv": 0.6, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0, "lockMs": 15,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "client->cdn", "from": "client", "to": "cdn", "weight": 1 },
+      { "id": "cdn->origin", "from": "cdn", "to": "origin", "weight": 1 },
+      { "id": "origin->db", "from": "origin", "to": "db", "weight": 1 }
+    ],
+    "annotations": [
+      {
+        "id": "co-note-miss", "kind": "note",
+        "text": "The origin only ever sees what the cache misses. It handles 120 a second, and the cache is currently hiding 90 percent of the traffic from it. Drag the hit rate down and the origin gets a load nobody ever sized it for.",
+        "x": 40, "y": 320, "width": 340, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

@@ -1,0 +1,198 @@
+{
+  "id": "twitter",
+  "name": "Twitter/X: timeline fan-out",
+  "tagline": "One tweet becoming a hundred thousand writes",
+  "description": "A simplified reconstruction of the Twitter timeline from Raffi Krikorian's \"Timelines at Scale\" talk; numbers are illustrative. Tweets fan out on write into precomputed timelines, so reads are one cache hit; every 20s a celebrity tweet dumps 200 fanout jobs on the firehose. Past 2x the fanout group never catches up again: reads stay green while timelines quietly go stale, and only the consumer lag tells the truth.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "readers", "kind": "client", "label": "Timeline Readers", "x": 40, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 300,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "gw", "kind": "apigateway", "label": "API Gateway", "x": 300, "y": 190,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 1.5, "serviceCv": 0.3, "queueLimit": 256,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 2500, "burst": 2500, "authFailRate": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "tlsvc", "kind": "service", "label": "Timeline Service", "x": 560, "y": 190,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 5, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "tlcache", "kind": "cache", "label": "Timeline Cache (Redis)", "x": 820, "y": 190,
+        "config": {
+          "capacity": 32, "instances": 1, "serviceMs": 2, "serviceCv": 0.4, "queueLimit": 256,
+          "hitRate": 0.92, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "tweetstore", "kind": "shard", "label": "Tweet Store (sharded)", "x": 1080, "y": 190,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 12, "serviceCv": 0.6, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "socialgraph", "kind": "graphdb", "label": "Social Graph", "x": 1340, "y": 320,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 6, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "traversalDepth": 2,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "searchsvc", "kind": "service", "label": "Search Blender", "x": 560, "y": 60,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "searchindex", "kind": "searchindex", "label": "Earlybird Index", "x": 1080, "y": 60,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "indexMs": 60, "indexLagMs": 800,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.6,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "tweeters", "kind": "client", "label": "Tweet Writers", "x": 40, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 30,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "wlimit", "kind": "ratelimiter", "label": "Write Rate Limit", "x": 300, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 90, "burst": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "writeapi", "kind": "service", "label": "Tweet Write API", "x": 560, "y": 514,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "firehose", "kind": "streambroker", "label": "Tweet Firehose", "x": 820, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 4000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "partitions": 8,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "fanout", "kind": "service", "label": "Fanout Workers", "x": 1080, "y": 514,
+        "config": {
+          "capacity": 4, "instances": 4, "serviceMs": 120, "serviceCv": 0.4, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "tlstore", "kind": "service", "label": "Timeline Store (Redis)", "x": 1340, "y": 514,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 512,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "celebrity", "kind": "cron", "label": "Celebrity Tweet", "x": 560, "y": 644,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "intervalMs": 20000, "batchSize": 200,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "pushsvc", "kind": "service", "label": "Push Notifications", "x": 1080, "y": 644,
+        "config": {
+          "capacity": 6, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "readers->gw", "from": "readers", "to": "gw", "weight": 1 },
+      { "id": "gw->tlsvc", "from": "gw", "to": "tlsvc", "weight": 5 },
+      { "id": "gw->searchsvc", "from": "gw", "to": "searchsvc", "weight": 1 },
+      { "id": "tlsvc->tlcache", "from": "tlsvc", "to": "tlcache", "weight": 1 },
+      { "id": "tlcache->tweetstore", "from": "tlcache", "to": "tweetstore", "weight": 1 },
+      { "id": "tlcache->socialgraph", "from": "tlcache", "to": "socialgraph", "weight": 1 },
+      { "id": "searchsvc->searchindex", "from": "searchsvc", "to": "searchindex", "weight": 1 },
+      { "id": "tweeters->wlimit", "from": "tweeters", "to": "wlimit", "weight": 1 },
+      { "id": "wlimit->writeapi", "from": "wlimit", "to": "writeapi", "weight": 1 },
+      { "id": "writeapi->tweetstore", "from": "writeapi", "to": "tweetstore", "weight": 1 },
+      { "id": "writeapi->firehose", "from": "writeapi", "to": "firehose", "weight": 1 },
+      { "id": "celebrity->firehose", "from": "celebrity", "to": "firehose", "weight": 1 },
+      { "id": "firehose->fanout", "from": "firehose", "to": "fanout", "weight": 1 },
+      { "id": "firehose->searchindex", "from": "firehose", "to": "searchindex", "weight": 1 },
+      { "id": "firehose->pushsvc", "from": "firehose", "to": "pushsvc", "weight": 1 },
+      { "id": "fanout->socialgraph", "from": "fanout", "to": "socialgraph", "weight": 1 },
+      { "id": "fanout->tlstore", "from": "fanout", "to": "tlstore", "weight": 1 }
+    ],
+    "annotations": [
+      { "id": "tw-sec-read", "kind": "section", "label": "Reading a timeline", "x": 532, "y": 44, "width": 1020, "height": 380, "tone": 0 },
+      { "id": "tw-sec-write", "kind": "section", "label": "Writing one, which costs far more", "x": 532, "y": 498, "width": 1020, "height": 250, "tone": 1 },
+      {
+        "id": "tw-note-read", "kind": "note",
+        "text": "Reading a timeline is cheap because the answer was written in advance. 300 reads a second are almost all served straight from cache; only a miss goes back to look up who you follow and rebuild it.",
+        "x": 1584, "y": 40, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "tw-note-fanout", "kind": "note",
+        "text": "Turn the load up to 2x and watch the fan-out workers. One tweet means one insert into every follower timeline, about 120ms each, and only eight run at once. They fall behind and never catch up, so timelines go stale while every read still comes back fast and green.",
+        "x": 1584, "y": 496, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "tw-note-celeb", "kind": "note",
+        "text": "Every 20 seconds a famous account tweets, and that one tweet becomes 200 fan-out jobs at once. This is why very large accounts get handled differently from everyone else.",
+        "x": 16, "y": 632, "width": 236, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}

@@ -1,0 +1,250 @@
+{
+  "id": "discord",
+  "name": "Discord: real-time chat",
+  "tagline": "Millions of sockets, and fan-out per message",
+  "description": "A simplified reconstruction of Discord from their engineering blog; numbers are illustrative. The gateway runs out of connections, not requests; one message fans out to every gateway pod, and at 2x the push tier sheds deliveries the senders never see; make one channel hot and its store shard melts alone. Voice rides its own servers.",
+  "topology": {
+    "nodes": [
+      {
+        "id": "conn", "kind": "client", "label": "New Connections", "x": 40, "y": 60,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 3000, "retries": 0, "rps": 30,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "gateway", "kind": "websocket", "label": "Gateway (WS)", "x": 300, "y": 60,
+        "config": {
+          "capacity": 400, "instances": 4, "serviceMs": 5, "serviceCv": 0.4, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "connectionMs": 40000,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "sessions", "kind": "service", "label": "Session Servers", "x": 560, "y": 60,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 10, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "senders", "kind": "client", "label": "Message Senders", "x": 40, "y": 320,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2500, "retries": 0, "rps": 80,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "limiter", "kind": "ratelimiter", "label": "API Rate Limit", "x": 300, "y": 320,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "rateLimitRps": 200, "burst": 200,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "msg-api", "kind": "service", "label": "Message API", "x": 560, "y": 320,
+        "config": {
+          "capacity": 16, "instances": 1, "serviceMs": 6, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "fanout", "kind": "pubsub", "label": "Guild Fan-out", "x": 820, "y": 190,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.2, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "push-a", "kind": "service", "label": "Gateway Push A", "x": 1080, "y": 60,
+        "config": {
+          "capacity": 2, "instances": 1, "serviceMs": 15, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "push-b", "kind": "service", "label": "Gateway Push B", "x": 1080, "y": 190,
+        "config": {
+          "capacity": 2, "instances": 1, "serviceMs": 15, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "push-c", "kind": "service", "label": "Gateway Push C", "x": 1080, "y": 320,
+        "config": {
+          "capacity": 2, "instances": 1, "serviceMs": 15, "serviceCv": 0.5, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "scylla", "kind": "shard", "label": "Message Store", "x": 820, "y": 320,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 40, "serviceCv": 0.6, "queueLimit": 32,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 6, "shardCapacity": 2, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "search-q", "kind": "queue", "label": "Index Queue", "x": 820, "y": 514,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 1, "serviceCv": 0.2, "queueLimit": 5000,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "indexer", "kind": "worker", "label": "Search Indexer", "x": 1080, "y": 514,
+        "config": {
+          "capacity": 4, "instances": 1, "serviceMs": 12, "serviceCv": 0.5, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "search", "kind": "searchindex", "label": "Message Search", "x": 1340, "y": 514,
+        "config": {
+          "capacity": 12, "instances": 1, "serviceMs": 8, "serviceCv": 0.5, "queueLimit": 128,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "indexMs": 60, "indexLagMs": 1500,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.15,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "media", "kind": "client", "label": "Media Fetch", "x": 40, "y": 644,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 2000, "retries": 0, "rps": 120,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "cdn", "kind": "cdn", "label": "Media CDN", "x": 300, "y": 644,
+        "config": {
+          "capacity": 256, "instances": 1, "serviceMs": 2, "serviceCv": 0.3, "queueLimit": 2048,
+          "hitRate": 0.9, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "blobs", "kind": "objectstore", "label": "Attachments", "x": 560, "y": 644,
+        "config": {
+          "capacity": 64, "instances": 1, "serviceMs": 90, "serviceCv": 0.4, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "prefixRps": 150,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "voice", "kind": "client", "label": "Voice Joins", "x": 40, "y": 838,
+        "config": {
+          "capacity": 1, "instances": 1, "serviceMs": 0, "serviceCv": 0, "queueLimit": 0,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 3000, "retries": 0, "rps": 20,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "rtc", "kind": "lb", "label": "RTC Discovery", "x": 300, "y": 838,
+        "config": {
+          "capacity": 256, "instances": 1, "serviceMs": 0.5, "serviceCv": 0.2, "queueLimit": 1024,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "sfu-a", "kind": "service", "label": "Voice Server A", "x": 560, "y": 838,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 20, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      },
+      {
+        "id": "sfu-b", "kind": "service", "label": "Voice Server B", "x": 560, "y": 968,
+        "config": {
+          "capacity": 8, "instances": 1, "serviceMs": 20, "serviceCv": 0.5, "queueLimit": 64,
+          "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 0,
+          "replicaCount": 3, "replicationLagMs": 50, "readFraction": 0.9,
+          "shardCount": 4, "shardCapacity": 4, "hotKeyFraction": 0
+        }
+      }
+    ],
+    "edges": [
+      { "id": "conn->gateway", "from": "conn", "to": "gateway", "weight": 1 },
+      { "id": "gateway->sessions", "from": "gateway", "to": "sessions", "weight": 1 },
+      { "id": "senders->limiter", "from": "senders", "to": "limiter", "weight": 1 },
+      { "id": "limiter->msg-api", "from": "limiter", "to": "msg-api", "weight": 1 },
+      { "id": "msg-api->scylla", "from": "msg-api", "to": "scylla", "weight": 1 },
+      { "id": "msg-api->fanout", "from": "msg-api", "to": "fanout", "weight": 1 },
+      { "id": "msg-api->search-q", "from": "msg-api", "to": "search-q", "weight": 1 },
+      { "id": "fanout->push-a", "from": "fanout", "to": "push-a", "weight": 1 },
+      { "id": "fanout->push-b", "from": "fanout", "to": "push-b", "weight": 1 },
+      { "id": "fanout->push-c", "from": "fanout", "to": "push-c", "weight": 1 },
+      { "id": "search-q->indexer", "from": "search-q", "to": "indexer", "weight": 1 },
+      { "id": "indexer->search", "from": "indexer", "to": "search", "weight": 1 },
+      { "id": "media->cdn", "from": "media", "to": "cdn", "weight": 1 },
+      { "id": "cdn->blobs", "from": "cdn", "to": "blobs", "weight": 1 },
+      { "id": "voice->rtc", "from": "voice", "to": "rtc", "weight": 1 },
+      { "id": "rtc->sfu-a", "from": "rtc", "to": "sfu-a", "weight": 1 },
+      { "id": "rtc->sfu-b", "from": "rtc", "to": "sfu-b", "weight": 1 }
+    ],
+    "annotations": [
+      { "id": "dc-sec-conn", "kind": "section", "label": "Holding the sockets open", "x": 12, "y": 44, "width": 760, "height": 120, "tone": 0 },
+      { "id": "dc-sec-msg", "kind": "section", "label": "Writing a message", "x": 12, "y": 304, "width": 760, "height": 120, "tone": 1 },
+      { "id": "dc-sec-push", "kind": "section", "label": "Pushing it out", "x": 1052, "y": 44, "width": 240, "height": 380, "tone": 2 },
+      { "id": "dc-sec-search", "kind": "section", "label": "Indexed later, off to the side", "x": 792, "y": 498, "width": 760, "height": 120, "tone": 3 },
+      { "id": "dc-sec-media", "kind": "section", "label": "Attachments", "x": 12, "y": 628, "width": 760, "height": 120, "tone": 4 },
+      { "id": "dc-sec-voice", "kind": "section", "label": "Voice, on its own hardware", "x": 12, "y": 822, "width": 760, "height": 250, "tone": 5 },
+      {
+        "id": "dc-note-conn", "kind": "note",
+        "text": "The gateway counts open connections, not requests. 30 new a second, each held for 40 seconds, is 1200 sockets against a ceiling of 1600. Double the load and it starts refusing connections outright.",
+        "x": 1320, "y": 48, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "dc-note-fanout", "kind": "note",
+        "text": "Drag the message rate up and watch the push servers. One message becomes one delivery per pod, and each pod can only do about 130 a second. Past that, members stop seeing messages while the senders see no errors at all. That silence is what makes fan-out hard.",
+        "x": 1608, "y": 272, "width": 320, "size": "md", "font": "hand"
+      },
+      {
+        "id": "dc-note-hot", "kind": "note",
+        "text": "Messages are split across six channel shards. Give the message store a hot key and one busy channel takes far more than its share, so that shard melts while the average still looks healthy.",
+        "x": 792, "y": 760, "width": 300, "size": "md", "font": "hand"
+      },
+      {
+        "id": "dc-note-voice", "kind": "note",
+        "text": "Voice runs on its own servers and never touches the text path, so chat can be on fire while calls stay up.",
+        "x": 792, "y": 976, "width": 300, "size": "md", "font": "hand"
+      }
+    ]
+  }
+}
