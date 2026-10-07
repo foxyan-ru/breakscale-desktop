@@ -684,14 +684,14 @@
     simulationStore.running = true;
 
     void (async () => {
-      let topology: Topology = topologyStore.topology;
+      let fetched: Topology | null = null;
       try {
         const list = await withTimeout(presetsList(), 'presets_list');
         examplesList = list;
         examplesLoaded = true;
         if (list.length > 0) {
           const preset = await withTimeout(presetLoad(list[0].id), 'preset_load');
-          topology = preset.topology;
+          fetched = preset.topology;
           activePresetId = preset.id;
           loadedName = preset.name;
         }
@@ -703,9 +703,23 @@
         // canvas is a legitimate starting state, not a failure.
       }
 
-      topologyStore.topology = topology;
+      // Swap in the fetched preset ONLY when one actually arrived. This
+      // used to assign unconditionally from a capture taken before the
+      // awaits, which meant the mount-time topology -- however the store
+      // had moved on while the fetch was in flight -- was written BACK
+      // over it: any edit landing in that window (a palette add in the
+      // first milliseconds, which is exactly what a test drives) was
+      // silently reverted to the pre-fetch state. On the failure path the
+      // store already holds the right topology and the swap is a no-op
+      // that can only destroy; on the success path only the fetched copy
+      // should land, which is what the original code meant to do.
+      if (fetched) topologyStore.topology = fetched;
+
       try {
-        await simNew(topology);
+        // Whatever the canvas shows RIGHT NOW -- the fetched preset on the
+        // success path, the store's own topology (possibly already edited)
+        // on the failure path -- is what the engine must hold.
+        await simNew(topologyStore.topology);
       } catch (e) {
         pushError(`Starting the simulation failed: ${describeErr(e)}`);
       }

@@ -257,8 +257,14 @@ describe('capacity', () => {
     expect(h.undoDepth).toBe(HISTORY_LIMIT);
     // The five OLDEST went, not the newest five.
     expect(h.oldestLabel).toBe('edit-5');
+
+    // Undo pops the NEWEST entry (edit-54) onto the redo stack; it does
+    // not touch the bottom of the bound, so the oldest survivor is still
+    // edit-5 (the five that fell off cannot resurface) and the stack only
+    // shrinks by the one entry that moved.
     h.undo(snap(topo()));
-    expect(h.oldestLabel).toBe('edit-6');
+    expect(h.undoDepth).toBe(HISTORY_LIMIT - 1);
+    expect(h.oldestLabel).toBe('edit-5');
   });
 });
 

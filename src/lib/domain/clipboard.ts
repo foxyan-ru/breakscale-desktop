@@ -140,6 +140,21 @@ export interface ClipboardSubgraph {
 }
 
 /**
+ * Deep-copy a clipboard payload. NOT `structuredClone`: the topology these
+ * values come from is Svelte 5 `$state`, and a state proxy makes
+ * `structuredClone` throw `DataCloneError` (the documented Svelte answer is
+ * `$state.snapshot`, which lives in a `.svelte.ts` file this domain module
+ * cannot import). A JSON round-trip is the clone that is guaranteed to work
+ * on proxies in every runtime -- and it is exactly what the payload already
+ * survives transit, since `buildClipboardText` serialises with
+ * `JSON.stringify` and `parseClipboardText` revives with `JSON.parse`, so
+ * nothing can be lost here that the clipboard itself would not lose.
+ */
+function jsonCopy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/**
  * The selected nodes plus the edges BETWEEN them.
  *
  * An edge to something outside the selection is dropped: a pasted subgraph
@@ -159,7 +174,7 @@ export function selectionSubgraph(
   if (nodes.length === 0) return null;
   const nodeIds = new Set(nodes.map((n) => n.id));
   const edges = topology.edges.filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to));
-  return { nodes: structuredClone(nodes), edges: structuredClone(edges) };
+  return { nodes: jsonCopy(nodes), edges: jsonCopy(edges) };
 }
 
 /**
@@ -236,7 +251,7 @@ export function cloneSubgraph(
     const id = freshId(n.kind, used);
     idMap.set(n.id, id);
     return {
-      ...structuredClone(n),
+      ...jsonCopy(n),
       id,
       x: n.x + dx,
       y: n.y + dy,
@@ -248,7 +263,7 @@ export function cloneSubgraph(
     const from = idMap.get(e.from);
     const to = idMap.get(e.to);
     if (!from || !to) continue;
-    edges.push({ ...structuredClone(e), id: `${from}->${to}`, from, to });
+    edges.push({ ...jsonCopy(e), id: `${from}->${to}`, from, to });
   }
 
   return { nodes, edges };
