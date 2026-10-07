@@ -26,7 +26,10 @@
     select,
     updateNodeConfig,
     setTopology,
+    setSelection,
   } from '$lib/state/topology.svelte';
+  import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
+  import type { HistoryEntry } from '$lib/state/history.svelte';
   import { simulationStore, setRunning } from '$lib/state/simulation.svelte';
   import { settingsStore } from '$lib/state/settings.svelte';
   import { uiStore, pushError } from '$lib/state/ui.svelte';
@@ -261,6 +264,12 @@
    */
   function handleRpsChange(next: number): void {
     if (clients.length === 0) return;
+    // Streamed edit: first frame captures the pre-drag baseline (and clears
+    // redo), later frames coalesce into the one entry -- App.tsx's
+    // handleRpsChange touches the history the same way (src/App.tsx ~1810).
+    // Placed after the guard so a slider with no clients cannot raise a
+    // pending entry nothing will ever change.
+    sessionHistory.touch('setting change', currentSnapshot());
     if (clients.length === 1) {
       updateNodeConfig(clients[0].id, { rps: next });
       return;
@@ -288,6 +297,9 @@
     const x = 160 + (n % 5) * 220;
     const y = 160 + Math.floor(n / 5) * 140;
     const node = makeNode(kind, x, y);
+    // Baseline BEFORE the add: one entry named 'add' whose topology lacks
+    // the node, selection and all (App.tsx's handleAddNode, 'add').
+    sessionHistory.commit('add', currentSnapshot());
     addNode(node);
     select(node.id, null);
   }
@@ -373,6 +385,9 @@
   async function handleLoadExample(id: string): Promise<void> {
     try {
       const preset = await withTimeout(presetLoad(id), 'preset_load');
+      // Committed only once the fetch has succeeded and only before the
+      // swap, so a failed load raises no entry (App.tsx's replaceDesign).
+      sessionHistory.commit('example load', currentSnapshot());
       setTopology(preset.topology);
       activePresetId = preset.id;
       loadedName = preset.name;
@@ -407,6 +422,9 @@
   async function handleStartChallenge(id: string): Promise<void> {
     try {
       const result = await challengeStart(id);
+      // Same placement as the example load: the pre-challenge diagram is the
+      // baseline, so Ctrl+Z returns the student out of it.
+      sessionHistory.commit('challenge start', currentSnapshot());
       setTopology(result.topology);
       activeChallenge = result.challenge;
       activePresetId = null;
@@ -459,6 +477,46 @@
       e.stopPropagation();
       closeOverlay();
     }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Undo / redo.
+   *
+   * Ported from `App.tsx`'s history wiring (src/App.tsx ~1029-1125): the
+   * stacks live in `$lib/state/history.svelte`, this file hands the module
+   * the live state before each edit (`currentSnapshot()`), applies a
+   * restored entry when one comes back, and owns the two header buttons
+   * plus the keyboard binding below. Disabled state is derived from the
+   * stacks on every render (via `sessionHistory.canUndo`), never cached --
+   * the cached-boolean regression Excalidraw shipped.
+   *
+   * Selection travels WITH the entry: `setTopology` clears the selection
+   * as a side effect (state/topology.svelte.ts), so the entry's own ids are
+   * re-applied straight after, restoring exactly what was selected before
+   * the edit. Nothing here reaches the Rust engine directly: `setTopology`
+   * pushes the topology itself, and `build_nodes` reuses each surviving
+   * NodeState (sim/engine.rs:888), so in-flight requests and metrics ride
+   * through an undo rather than rebuilding cold -- the desktop's answer to
+   * App.tsx's `syncEngine`.
+   *
+   * Divergence worth naming: the active-example badge (`activePresetId`) is
+   * page-local and not part of the snapshot, so undoing a preset load
+   * restores the diagram but not the badge.
+   * ------------------------------------------------------------------ */
+
+  function applyEntry(entry: HistoryEntry): void {
+    setTopology(entry.topology);
+    setSelection(entry.selectedIds);
+  }
+
+  function handleUndo(): void {
+    const entry = sessionHistory.undo(currentSnapshot());
+    if (entry) applyEntry(entry);
+  }
+
+  function handleRedo(): void {
+    const entry = sessionHistory.redo(currentSnapshot());
+    if (entry) applyEntry(entry);
   }
 
   /* ------------------------------------------------------------------ *
@@ -526,6 +584,24 @@
 
   function onWindowKeyDown(e: KeyboardEvent): void {
     if (isTypingTarget(e.target)) return;
+
+    // Undo / redo, straight out of App.tsx (~2305): Ctrl/Cmd+Z is undo,
+    // Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y are redo, Alt never triggers, and
+    // `e.code` (not `e.key`) so the binding survives a non-QWERTY layout.
+    // Returns without falling through so a handled chord cannot also toggle
+    // a panel below. The table in `shell/Shortcuts.svelte` has advertised
+    // these bindings since it was ported; this is what finally handles them.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyZ') {
+      e.preventDefault();
+      if (e.shiftKey) handleRedo();
+      else handleUndo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyY') {
+      e.preventDefault();
+      handleRedo();
+      return;
+    }
 
     // Escape: Canvas.svelte owns clearing the canvas selection/tool itself
     // (its own window keydown listener), and every `shell/*.svelte` dialog
@@ -685,6 +761,61 @@
         <h1 class="app-title">Breakscale</h1>
         <p class="app-tagline">Build it, load it, watch it break</p>
       </div>
+
+      <!-- Undo / redo, beside the wordmark at the editing end of the bar,
+           away from the run/pause cluster: these operate on the DIAGRAM,
+           not on the simulation. Markup and icons transcribed verbatim from
+           App.tsx's `.app-history` (~2562), so the port reads as the same
+           app; both are real <button>s, both disabled purely by stack
+           depth. -->
+      <div class="app-history">
+        <button
+          type="button"
+          class="btn btn-sm btn-icon"
+          disabled={!sessionHistory.canUndo}
+          aria-label="Undo"
+          title="Undo (Ctrl+Z)"
+          onclick={handleUndo}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M9 14 4 9l5-5" />
+            <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm btn-icon"
+          disabled={!sessionHistory.canRedo}
+          aria-label="Redo"
+          title="Redo (Ctrl+Shift+Z)"
+          onclick={handleRedo}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m15 14 5-5-5-5" />
+            <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- The web app's `.app-island-load` (App.tsx ~2606): the load slider
@@ -792,13 +923,31 @@
               nodeId={node.id}
               kind={node.kind}
               config={node.config}
-              onChange={(patch) => updateNodeConfig(node.id, patch)}
+              onChange={(patch) => {
+                // Streamed vendor control: same 'setting change' entry the
+                // top-bar slider takes (App.tsx's handleConfigChange), so a
+                // vendor slider drag is one Ctrl+Z, not one per frame.
+                sessionHistory.touch('setting change', currentSnapshot());
+                updateNodeConfig(node.id, patch);
+              }}
             />
           </div>
         {/if}
       </aside>
     {/if}
   </div>
+
+  <!-- Undo/redo receipt. role="status" rather than role="alert": an undo is
+       expected and unhurried, so it is announced without interrupting the
+       screen reader (App.tsx's toast markup, ~2965). Keyed on the receipt's
+       id so a repeat re-mounts and restarts the entrance animation instead
+       of the text silently swapping in place. -->
+  {#if sessionHistory.receipt}
+    {@const receipt = sessionHistory.receipt}
+    {#key receipt.id}
+      <div class="app-toast" role="status">{receipt.text}</div>
+    {/key}
+  {/if}
 </div>
 
 <Designs open={uiStore.activeView === 'designs'} onClose={closeOverlay} suggestedName={loadedName} />

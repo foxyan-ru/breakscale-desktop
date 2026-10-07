@@ -66,7 +66,10 @@
 
      See this file's closing comment block for the full, itemised list of
      what is still simplified relative to `Canvas.tsx` / `annotationLayout.ts`
-     (alt-drag-duplicate, Ctrl+D and undo/redo remain out of scope).
+     (alt-drag-duplicate and Ctrl+D remain out of scope; undo/redo lives in
+     `$lib/state/history.svelte` + `routes/+page.svelte`, with THIS file
+     bracketing pointer gestures and committing each discrete topology edit
+     it performs).
      ========================================================================== */
 
   import { onMount } from 'svelte';
@@ -84,6 +87,7 @@
     selectAll,
     clearSelection,
   } from '$lib/state/topology.svelte';
+  import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
   import { simulationStore } from '$lib/state/simulation.svelte';
   import { settingsStore } from '$lib/state/settings.svelte';
   import { simSetTopology } from '$lib/api/sim';
@@ -615,17 +619,31 @@
 
   function createNote(x: number, y: number): string {
     const note = makeAnnNote(snapIf(x), snapIf(y), NEW_NOTE_TEXT);
+    // Pre-write baseline, so one Ctrl+Z drops the note back off the canvas.
+    // App.tsx commits 'add note' (:1300) in the same before/after order.
+    sessionHistory.commit('add note', currentSnapshot());
     commitAnnotations([...annotations, note]);
     return note.id;
   }
 
   function createSection(x: number, y: number, w: number, h: number): string {
     const section = makeAnnSection(snapIf(x), snapIf(y), Math.round(w), Math.round(h));
+    // Same before/after order as App.tsx's 'add section' commit (:1323);
+    // every path that makes a section (tool click, section draw, palette
+    // drop) funnels through here, so each is exactly one entry.
+    sessionHistory.commit('add section', currentSnapshot());
     commitAnnotations([...annotations, section]);
     return section.id;
   }
 
   function deleteAnnotation(id: string): void {
+    // Missing id = nothing to drop; committing anyway would raise a no-op
+    // entry that still clears redo (the blanked-note editor can re-fire on
+    // an already-gone note).
+    if (!annotationById.has(id)) return;
+    // ONE entry for the removal, baseline first -- App.tsx's 'delete'
+    // commit (:1587) guards and orders the same way.
+    sessionHistory.commit('delete', currentSnapshot());
     commitAnnotations(annotations.filter((a) => a.id !== id));
   }
 
@@ -666,20 +684,31 @@
       deleteAnnotation(id);
       return;
     }
-    commitAnnotations(
-      annotations.map((a) => (a.id === id && isNote(a) ? { ...a, text: text.slice(0, 2000) } : a)),
-    );
+    const next = text.slice(0, 2000);
+    const target = annotationById.get(id);
+    // Closing the editor with the text unchanged must raise NO entry --
+    // a phantom commit would clear redo for nothing. App.tsx's
+    // handleEditNote guards identically before its 'note edit' commit
+    // (:1363), which also sits after every guard and before the write.
+    if (!target || !isNote(target) || target.text === next) return;
+    sessionHistory.commit('note edit', currentSnapshot());
+    commitAnnotations(annotations.map((a) => (a.id === id && isNote(a) ? { ...a, text: next } : a)));
   }
 
   function commitSectionLabel(id: string, label: string): void {
-    commitAnnotations(
-      annotations.map((a) =>
-        a.id === id && isSection(a) ? { ...a, label: label.slice(0, 200) } : a,
-      ),
-    );
+    const next = label.slice(0, 200);
+    const target = annotationById.get(id);
+    // Same no-op guard as the note editor above; web commits 'label edit'
+    // at :1376 in the same guarded position.
+    if (!target || !isSection(target) || target.label === next) return;
+    sessionHistory.commit('label edit', currentSnapshot());
+    commitAnnotations(annotations.map((a) => (a.id === id && isSection(a) ? { ...a, label: next } : a)));
   }
 
   function cycleSectionTone(id: string): void {
+    // A shade flip is one discrete entry, like App.tsx's 'section shade'
+    // commit (:1440).
+    sessionHistory.commit('section shade', currentSnapshot());
     commitAnnotations(
       annotations.map((a) =>
         a.id === id && isSection(a) ? { ...a, tone: (a.tone + 1) % SECTION_TONE_COUNT } : a,
@@ -732,6 +761,11 @@
     const node = nodeById.get(id);
     const label = draft.trim();
     if (!node || label === '' || label === node.label) return;
+    // Web fires its rename stream through touch('rename') (:1795) and
+    // debounces it into one typed name; this editor writes once on
+    // Enter/blur, so the same touch still lands exactly one 'rename'
+    // entry (flushed by the next commit or by undo itself).
+    sessionHistory.touch('rename', currentSnapshot());
     renameNode(id, label);
   }
 
@@ -811,7 +845,12 @@
       if (isPalmTouch(e.pointerType, e.width, e.height, penIsDown)) return;
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (touches.size >= 2) {
+        // A second finger takes the surface over: close any undo gesture the
+        // first had going (it dropped its topology on release anyway, so the
+        // baseline normally discards itself -- what matters is that no
+        // baseline is left dangling past this point).
         pending = null;
+        closeUndoGesture();
         pinch = beginPinch(touches, view.k);
         return;
       }
@@ -846,6 +885,19 @@
     };
   }
 
+  /**
+   * Bracket the pointer gesture's undo entry. Called on EVERY way a gesture
+   * can end -- pointerup, pointercancel, Escape (cancelGesture) and a pinch
+   * taking the surface over mid-drag -- so a `beginGesture` baseline can
+   * never outlive its gesture and silently swallow the next one. A gesture
+   * that changed nothing drops out of `endGesture` with nothing pushed, so
+   * a plain click costs no undo step. This is the desktop's port of
+   * `Canvas.tsx`'s `onMoveEnd`, the single funnel all of those exits used.
+   */
+  function closeUndoGesture(): void {
+    if (sessionHistory.inGesture) sessionHistory.endGesture(currentSnapshot());
+  }
+
   function promote(p: PendingGesture): void {
     try {
       surfaceEl?.setPointerCapture(p.pointerId);
@@ -860,6 +912,11 @@
           break;
         }
         p.mode = 'node';
+        // Baseline FIRST, before the selectOne below: one 'move' entry for
+        // the whole drag, holding the PRE-drag selection too so undo puts
+        // it back (Canvas.tsx fires onMoveStart at exactly this point --
+        // see its comment at ~361).
+        sessionHistory.beginGesture('move', currentSnapshot());
         p.grabDx = p.worldX - node.x;
         p.grabDy = p.worldY - node.y;
         dragOverlay = { id: node.id, x: node.x, y: node.y };
@@ -914,6 +971,9 @@
           break;
         }
         p.mode = 'ann';
+        // Before selectOne: same pre-drag baseline as the node case
+        // (Canvas.tsx's onMoveStart at ~3989).
+        sessionHistory.beginGesture('move', currentSnapshot());
         annMoveOverlay = { id: ann.id, dx: 0, dy: 0 };
         selectOne(ann.id, false);
         break;
@@ -925,6 +985,9 @@
           break;
         }
         p.mode = 'ann-resize';
+        // Resizing is its own entry label, matching the 'resize' label the
+        // web gives this same promote branch (Canvas.tsx ~4050).
+        sessionHistory.beginGesture('resize', currentSnapshot());
         p.annDir = p.hitDir as ResizeHandleDir;
         p.annOrigin = { x: ann.x, y: ann.y, w: ann.width, h: ann.height };
         annResizeOverlay = { id: ann.id, rect: { ...p.annOrigin } };
@@ -937,6 +1000,8 @@
           break;
         }
         p.mode = 'note-resize';
+        // Same 'resize' label the web gives this branch (Canvas.tsx ~4066).
+        sessionHistory.beginGesture('resize', currentSnapshot());
         p.annDir = p.hitDir as ResizeHandleDir;
         noteResizeOverlay = { id: ann.id, x: ann.x, width: ann.width };
         break;
@@ -1129,6 +1194,10 @@
       }
       case 'link':
         if (linkPreview?.over) {
+          // Discrete write outside any bracket (promote does not open one
+          // for 'link'), so it commits its own entry -- App.tsx's
+          // 'connection' commit at :1556.
+          sessionHistory.commit('connection', currentSnapshot());
           addEdge({ id: newId('edge'), from: linkPreview.from, to: linkPreview.over, weight: 1 });
         }
         linkPreview = null;
@@ -1203,6 +1272,9 @@
       case 'node': {
         if (!p.hitId) break;
         if (pendingLinkFrom && canLink(pendingLinkFrom, p.hitId)) {
+          // Same 'connection' entry as the drag-release link path above
+          // (App.tsx :1556): a click-through connection is one Ctrl+Z step.
+          sessionHistory.commit('connection', currentSnapshot());
           addEdge({ id: newId('edge'), from: pendingLinkFrom, to: p.hitId, weight: 1 });
           pendingLinkFrom = null;
           break;
@@ -1222,7 +1294,12 @@
         if (p.hitId) selectOne(p.hitId, additive);
         break;
       case 'edge-delete':
-        if (p.hitId) removeEdge(p.hitId);
+        if (p.hitId) {
+          // The X on an edge label routes to web's handleDeleteSelection
+          // (:1587, 'delete'), not to a connection-shaped undo.
+          sessionHistory.commit('delete', currentSnapshot());
+          removeEdge(p.hitId);
+        }
         break;
       case 'section':
       case 'note':
@@ -1272,6 +1349,9 @@
     }
     if (!p.active) handleClick(p);
     else finishDrag(p);
+    // AFTER finishDrag wrote the topology, so endGesture sees the moved
+    // result against the promote-time baseline and lands exactly one entry.
+    closeUndoGesture();
   }
 
   function onSurfacePointerCancel(e: PointerEvent): void {
@@ -1289,6 +1369,9 @@
     noteResizeOverlay = null;
     drawSectionOverlay = null;
     marqueeOverlay = null;
+    // A cancelled gesture discards its overlays without touching topology,
+    // so this only ever tidies away a baseline that can no longer move.
+    closeUndoGesture();
   }
 
   /**
@@ -1331,6 +1414,10 @@
     noteResizeOverlay = null;
     drawSectionOverlay = null;
     marqueeOverlay = null;
+    // Escape ends the gesture the same way pointerup would, so an
+    // interrupted drag still lands as one entry (nothing changed, so the
+    // baseline discards itself rather than pushing an empty step).
+    closeUndoGesture();
   }
 
   onMount(() => {
@@ -1396,6 +1483,12 @@
           else if (annIdSet.has(id)) annIds.push(id);
           else edgeIds.push(id);
         }
+        // ONE entry for the whole selection, orphaned edges included,
+        // after every guard and before either write -- App.tsx's
+        // handleDeleteSelection orders it identically (:1587).
+        if (nodeIds.length > 0 || edgeIds.length > 0 || annIds.length > 0) {
+          sessionHistory.commit('delete', currentSnapshot());
+        }
         if (nodeIds.length > 0 || edgeIds.length > 0) removeSelection(nodeIds, edgeIds);
         if (annIds.length > 0) {
           commitAnnotations(annotations.filter((a) => !annIds.includes(a.id)));
@@ -1411,6 +1504,9 @@
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (pendingLinkFrom && canLink(pendingLinkFrom, node.id)) {
+        // Keyboard-confirmed connection: same 'connection' entry as the
+        // two pointer paths (App.tsx :1556).
+        sessionHistory.commit('connection', currentSnapshot());
         addEdge({ id: newId('edge'), from: pendingLinkFrom, to: node.id, weight: 1 });
         pendingLinkFrom = null;
       } else {
@@ -1429,6 +1525,12 @@
     else return;
     e.preventDefault();
     e.stopPropagation();
+    // Arrow nudges stream on key-repeat; touch coalesces one held burst
+    // into a single 'move' entry and a lone press into one entry, exactly
+    // App.tsx's guarded touch('move') at :1156 (the guard also keeps this
+    // out of an open pointer-gesture bracket, though the two never overlap
+    // today).
+    if (!sessionHistory.inGesture) sessionHistory.touch('move', currentSnapshot());
     moveNode(node.id, node.x + dx, node.y + dy);
   }
 
@@ -1499,6 +1601,12 @@
       else if (annIdSet.has(id)) annIds.push(id);
       else edgeIds.push(id);
     }
+    // Web routes cut through the same handleDeleteSelection as the Delete
+    // key (:1587), so cut is 'delete', not a label of its own -- one entry
+    // for the whole removed selection, baseline before the writes.
+    if (nodeIds.length > 0 || edgeIds.length > 0 || annIds.length > 0) {
+      sessionHistory.commit('delete', currentSnapshot());
+    }
     if (nodeIds.length > 0 || edgeIds.length > 0) removeSelection(nodeIds, edgeIds);
     if (annIds.length > 0) {
       commitAnnotations(annotations.filter((a) => !annIds.includes(a.id)));
@@ -1542,6 +1650,9 @@
     }
     const dx = Math.round((at.x - (minX + maxX) / 2) / GRID) * GRID;
     const dy = Math.round((at.y - (minY + maxY) / 2) / GRID) * GRID;
+    // After every guard and positioned, before the append -- App.tsx's
+    // 'paste' commit sits at exactly this point (:1734).
+    sessionHistory.commit('paste', currentSnapshot());
     appendClones(cloneSubgraph(sub, topology, dx, dy));
   }
 
@@ -1589,6 +1700,10 @@
     e.preventDefault();
     const w = toWorld(e.clientX, e.clientY);
     const node = makeNode(kind, snapIf(w.x - NODE_W / 2), snapIf(w.y - NODE_H / 2));
+    // Same 'add' entry as the +page palette click (App.tsx :1476); the
+    // annotation drops above ride on createNote/createSection's own
+    // commits instead.
+    sessionHistory.commit('add', currentSnapshot());
     addNode(node);
     selectOne(node.id, false);
   }
@@ -2327,7 +2442,23 @@
           still selects and moves only that annotation -- the web app
           promotes an annotation press into a group too, and wiring that
           would touch `promote()`'s `'section'`/`'note'` cases.
-        - Undo/redo is NOT implemented (confirmed out of scope).
+        - Undo/redo is FULLY wired: `promote()` opens one history entry
+          per drag (`beginGesture`, before it changes any selection) and
+          every way a gesture can end closes it (`closeUndoGesture`), so a
+          move/resize is a single Ctrl+Z step while a click costs nothing;
+          every OTHER topology write this file performs carries its own
+          `sessionHistory.commit`/`touch` with the web's exact label --
+          link creation (`finishDrag` `'link'`, `handleClick` and the
+          keyboard Enter, 'connection'), edge delete and Delete/Backspace
+          and cut ('delete'), note/section creation ('add note'/'add
+          section', covering tool click, section draw and palette drop),
+          tone cycling ('section shade'), the note/section editors ('note
+          edit'/'label edit'), paste ('paste'), palette drop ('add'),
+          double-click rename (`touch('rename')`) and the arrow-key nudge
+          (`touch('move')`) -- mirroring App.tsx's own commit sites. The
+          history itself, the header buttons and Ctrl+Z / Ctrl+Shift+Z /
+          Ctrl+Y live in `$lib/state/history.svelte` and
+          `routes/+page.svelte`.
         - Zoom-to-fit IS implemented: the cluster's fit button and the %
           button beside it, plus Shift+1 (everything) / Shift+2 (the
           selection), matching what Shortcuts.svelte's View list already

@@ -58,6 +58,7 @@
 		type InspectorField,
 		type RangeFieldSpec,
 	} from './field-schema';
+	import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
 
 	/* ---------------------------------------------------------------- *
 	 * Selection -> node -> stats.
@@ -124,6 +125,10 @@
 		const next = { ...draft };
 		delete next[field];
 		draft = next;
+		// Baseline BEFORE the write; touch (not commit) so successive knob
+		// changes inside the settle window land as ONE entry -- App.tsx's
+		// handleConfigChange touches 'setting change' the same way (:1751).
+		sessionHistory.touch('setting change', currentSnapshot());
 		updateNodeConfig(node.id, { [field]: value } as Partial<NodeConfig>);
 	}
 
@@ -175,6 +180,10 @@
 	function onTrafficPatternChange(e: Event): void {
 		if (!node) return;
 		const value = (e.currentTarget as HTMLSelectElement).value as TrafficPattern;
+		// Same 'setting change' stream as every other knob here (App.tsx
+		// :1776/:1829 use one label for all config paths, so a pattern flip
+		// coalesces with a slider drag into one undo step).
+		sessionHistory.touch('setting change', currentSnapshot());
 		updateNodeConfig(node.id, { traffic: value });
 	}
 

@@ -39,6 +39,7 @@
 	import { isAppError } from '$lib/api';
 	import { pushError } from '$lib/state/ui.svelte';
 	import { topologyStore, setTopology } from '$lib/state/topology.svelte';
+	import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
 	import { MAX_NAME, MAX_SAVED, DESIGN_FILE_EXT } from '$lib/domain';
 	import type { SavedSummary } from '$lib/domain';
 
@@ -165,6 +166,10 @@
 		openingId = id;
 		try {
 			const design = await designsGet(id);
+			// Committed only once the fetch succeeded and before the swap --
+			// the pre-open diagram is the undo baseline, exactly App.tsx's
+			// replaceDesign(..., 'open design') at :1912.
+			sessionHistory.commit('open design', currentSnapshot());
 			setTopology(design.topology);
 			onClose();
 		} catch (e) {
@@ -258,6 +263,10 @@
 			if (!path) return;
 			const result = await designFileRead(path);
 			if (result.ok) {
+				// Same guarded placement as the open above, labelled like
+				// App.tsx's import path (replaceDesign(..., 'file import'),
+				// :2131).
+				sessionHistory.commit('file import', currentSnapshot());
 				setTopology(result.topology);
 				actionError = null;
 				onClose();
