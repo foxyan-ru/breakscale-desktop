@@ -18,10 +18,11 @@ jobs:
   # svelte-check typechecks the .svelte markup that a plain tsc run never
   # sees -- but it does not run the real Svelte compiler, which is stricter:
   # the first release build failed on `return $state(...)` placement that
-  # svelte-check let through. So the gate is check + build: the build is
-  # still frontend-only (no cargo), ~40s, and catches compiler-level
-  # errors before a release tag does. One Linux run is the whole coverage:
-  # both steps read the same bytes on every OS.
+  # svelte-check let through. So the gate is check + test + build: vitest
+  # covers behavior (the tests the desktop port regressed on), the build is
+  # still frontend-only (no cargo), ~40s, and catches compiler-level errors
+  # before a release tag does. One Linux run is the whole coverage: every
+  # step reads the same bytes on every OS.
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -44,5 +45,33 @@ jobs:
       - name: Check
         run: bun run check
 
+      - name: Test
+        run: bun run test
+
       - name: Build
         run: bun run build
+
+  # Rust unit tests. Windows rather than Ubuntu on purpose: compiling the
+  # tauri crate on Linux needs the webkit2gtk/gtk dev packages installed
+  # first, while the Windows runner has everything MSVC needs out of the
+  # box -- and Windows is the platform the app is primarily tested on.
+  # `cargo test` builds the lib, the bin and every #[cfg(test)] module, so
+  # it subsumes `cargo check` for correctness; the two share one compile.
+  rust:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
