@@ -26,7 +26,16 @@ const TICK_MS: u64 = 16;
 /// How often a snapshot is pushed to the frontend. Matches the web app's
 /// 10Hz `snapshot()` polling rate -- AGENTS.md: "React re-renders at 10Hz.
 /// Never setState per frame," which applies just as much to a Svelte store.
-const SNAPSHOT_EVERY_N_TICKS: u32 = (100 / TICK_MS as u32).max(1);
+/// `.max` is not const-stable on this toolchain, so the clamp is spelled
+/// out as an if/else that const-evaluates.
+const SNAPSHOT_EVERY_N_TICKS: u32 = {
+    let n = 100 / TICK_MS as u32;
+    if n < 1 {
+        1
+    } else {
+        n
+    }
+};
 
 pub const SNAPSHOT_EVENT: &str = "sim://snapshot";
 /// Emitted if the tick thread's engine lock is ever found poisoned (a panic

@@ -472,7 +472,7 @@ pub fn default_config(kind: NodeKind) -> NodeConfig {
 
 /// One row of `_index.json`: enough to render the preset palette without
 /// parsing every full topology.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresetSummary {
     pub id: String,

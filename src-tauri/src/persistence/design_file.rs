@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::sim::types::{NodeKind, Topology};
+use crate::sim::types::{Annotation, NodeKind, Topology};
 
 /// Marker written into every exported file, and required on the way back in.
 /// Not security, a courtesy: a student who opens the wrong JSON gets "this is
@@ -245,14 +245,13 @@ pub(crate) fn is_topology(value: &serde_json::Value) -> Option<Topology> {
 }
 
 /// Conservative placeholder: full annotation validation (note/section
-/// field-level checks from sim/annotations.ts) is not yet ported; this only
-/// guarantees the stored value is an array, matching sanitizeAnnotations()'s
-/// "must be an array" precondition. See MIGRATION_PLAN.md.
-pub(crate) fn sanitize_annotations(raw: Option<serde_json::Value>) -> Option<serde_json::Value> {
+/// field-level checks from sim/annotations.ts) is not yet ported; serde has
+/// already guaranteed the value deserialized as an array, so this only
+/// keeps the non-empty case, matching sanitizeAnnotations()'s "must be an
+/// array" precondition. See MIGRATION_PLAN.md.
+pub(crate) fn sanitize_annotations(raw: Option<Vec<Annotation>>) -> Option<Vec<Annotation>> {
     match raw {
-        Some(serde_json::Value::Array(items)) if !items.is_empty() => {
-            Some(serde_json::Value::Array(items))
-        }
+        Some(items) if !items.is_empty() => Some(items),
         _ => None,
     }
 }

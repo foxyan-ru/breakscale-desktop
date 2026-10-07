@@ -217,11 +217,23 @@ type StartFn<X> = fn(&mut dyn BehaviourCtx, &dyn NodeStateLike, &Dispatch<'_>, &
 type ReqFn<X> = fn(&mut dyn BehaviourCtx, &dyn NodeStateLike, &dyn ReqLike, &Arc<Mutex<Pool<X>>>);
 
 /// Either hook may be absent.
-#[derive(Clone, Copy)]
+///
+/// `Clone`/`Copy` are hand-written rather than derived: both fields are
+/// plain function pointers, which are `Copy` for every `X`, whereas a
+/// `#[derive]` would also demand `X: Clone + X: Copy` -- bounds the callers
+/// (which only have `X: Send + 'static`) do not meet.
 struct PoolHooks<X> {
     on_start: Option<StartFn<X>>,
     on_served: Option<ReqFn<X>>,
 }
+
+impl<X> Clone for PoolHooks<X> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<X> Copy for PoolHooks<X> {}
 
 fn start_pool_service<X: Send + 'static>(
     ctx: &mut dyn BehaviourCtx,

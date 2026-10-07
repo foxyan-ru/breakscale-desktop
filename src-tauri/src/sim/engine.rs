@@ -1186,6 +1186,23 @@ impl Engine {
 
     /* ---------------- event dispatch ---------------- */
 
+    /// Schedule an event at simulated time `at`. The insertion sequence
+    /// number breaks ties, so two events landing on the same millisecond
+    /// pop in the order they were pushed -- which is what keeps replay
+    /// deterministic. Mirrors TS `Engine.push()` minus its `freeEv`
+    /// recycling pool, which only existed to dodge JS garbage collection.
+    fn push(&mut self, at: f64, kind: EvKind, node_id: &str, req: Option<ReqHandle>) {
+        let seq = self.seq;
+        self.seq = seq + 1;
+        self.heap.push(Ev {
+            time: at,
+            seq,
+            kind,
+            node_id: node_id.to_string(),
+            req,
+        });
+    }
+
     fn dispatch(&mut self, ev: Ev) {
         if !self.nodes.contains_key(&ev.node_id) {
             return;
