@@ -79,3 +79,57 @@ pub fn load() -> Vec<GlossaryEntry> {
         Err(err) => panic!("data/glossary.json is malformed: {err}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// The only runtime path the glossary has: `glossary_list` serves
+    /// `load()` verbatim, and `load()` PANICS on malformed data instead of
+    /// returning an empty list -- so the failure mode of unchecked data
+    /// drift is a rejected invoke and a permanently empty glossary panel
+    /// (the exact "opens but no results" bug). Pin the invariants the
+    /// frontend depends on: full count, non-empty teaching text on every
+    /// entry, unique ids (they are DOM anchors), and every `see` cross
+    /// reference resolving to a real id.
+    #[test]
+    fn embedded_glossary_is_complete_and_well_formed() {
+        let entries = load();
+        assert_eq!(entries.len(), 100, "expected the full ported glossary");
+
+        let mut ids = HashSet::new();
+        for entry in &entries {
+            assert!(!entry.id.is_empty(), "entry with an empty id");
+            assert!(!entry.term.is_empty(), "entry '{}' has no term", entry.id);
+            assert!(!entry.short.is_empty(), "entry '{}' has no short definition", entry.id);
+            assert!(!entry.why.is_empty(), "entry '{}' has no why text", entry.id);
+            assert!(ids.insert(entry.id.as_str()), "duplicate id '{}'", entry.id);
+        }
+
+        for entry in &entries {
+            for target in entry.see.iter().flatten() {
+                assert!(
+                    ids.contains(target.as_str()),
+                    "entry '{}' references unknown id '{}'",
+                    entry.id,
+                    target
+                );
+            }
+        }
+    }
+
+    /// Serialization is the wire format the frontend consumes (`camelCase`
+    /// keys, lowercase category); if a serde attribute drifts, the panel
+    /// would receive shapes its `GlossaryEntry` type never declared.
+    #[test]
+    fn entries_serialize_with_frontend_field_names() {
+        let first = &load()[0];
+        let value = serde_json::to_value(first).unwrap();
+        for key in ["id", "term", "short", "why", "category"] {
+            assert!(value.get(key).is_some(), "missing wire key '{key}': {value}");
+        }
+        let category = value["category"].as_str().unwrap();
+        assert_eq!(category, category.to_lowercase(), "category must be lowercase: {category}");
+    }
+}
