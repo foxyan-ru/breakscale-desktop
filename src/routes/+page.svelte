@@ -703,17 +703,19 @@
     cursor: default;
   }
 
+  /* Viewport math instead of `100%`: this card is a `place-items: center`
+     (fit-content) grid item, so a percentage max-height has no guaranteed
+     definite base. Unclamped, the card would run past the viewport, which
+     `html, body { overflow: clip }` makes unreachable. Same number as
+     `min(720px, 100%)` when the percentage does resolve. Kept OUTSIDE the
+     rule below: the scroll-contract test extracts this rule as selector
+     through its first closing brace, and this comment contains braces. */
   .sd-card {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
     width: min(900px, 100%);
-    /* Viewport math instead of `100%`: this card is a `place-items: center`
-       (fit-content) grid item, so a percentage max-height has no guaranteed
-       definite base. Unclamped, the card would run past the viewport, which
-       `html, body { overflow: clip }` makes unreachable. Same number as
-       `min(720px, 100%)` when the percentage does resolve. */
     max-height: min(720px, calc(100vh - var(--sp-5) * 2));
     min-height: 0;
     padding: var(--sp-5);
