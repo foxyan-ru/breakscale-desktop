@@ -822,12 +822,14 @@ mod tests {
     use crate::sim::types::{NodeConfig, NodeKind, NodeStats, SimEdge, SimNode, Topology};
 
     /// WHY: `behaviour-data.ts:21-34` (upstream `0820b8c0`, PR #60). Pure
-    /// unit coverage of the helper itself: non-finite falls to `min`, and a
-    /// value above `max` is held there rather than passed through.
+    /// unit coverage of the helper itself: upstream's guard is
+    /// `!Number.isFinite(v)`, which is true for `Infinity` as much as for
+    /// `NaN` -- both fall to `min`, not to `max`. Only a huge but FINITE
+    /// value (e.g. 1e9 below) is the one that gets held at `max`.
     #[test]
     fn clamp_int_guards_non_finite_and_caps_the_maximum() {
         assert_eq!(clamp_int(f64::NAN, 1, 64), 1);
-        assert_eq!(clamp_int(f64::INFINITY, 1, 64), 64);
+        assert_eq!(clamp_int(f64::INFINITY, 1, 64), 1);
         assert_eq!(clamp_int(f64::NEG_INFINITY, 1, 64), 1);
         assert_eq!(clamp_int(1e9, 1, 64), 64);
         assert_eq!(clamp_int(8.9, 1, 64), 8);

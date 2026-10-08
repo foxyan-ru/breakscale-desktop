@@ -1087,13 +1087,13 @@ mod tests {
 
     /// WHY: `behaviour-resilience.ts` `cfgRenditions()` (upstream
     /// `dcb6980c`, PR #62). Pure unit coverage of the helper itself:
-    /// non-finite and out-of-range values fall back to the default of 3,
-    /// and a value above `MAX_RENDITIONS` is held at the cap rather than
-    /// passed through uncapped.
+    /// upstream's guard is `!Number.isFinite(v) || v < 1`, which routes
+    /// `Infinity` to the fallback of 3 exactly like `NaN` -- only a huge
+    /// but FINITE value (1e9 below) is held at `MAX_RENDITIONS`.
     #[test]
     fn clamp_renditions_guards_non_finite_and_caps_the_maximum() {
         assert_eq!(clamp_renditions(Some(f64::NAN)), 3);
-        assert_eq!(clamp_renditions(Some(f64::INFINITY)), 12);
+        assert_eq!(clamp_renditions(Some(f64::INFINITY)), 3);
         assert_eq!(clamp_renditions(Some(f64::NEG_INFINITY)), 3);
         assert_eq!(clamp_renditions(Some(1e9)), 12);
         assert_eq!(clamp_renditions(Some(0.0)), 3);
@@ -1136,10 +1136,15 @@ mod tests {
     }
 
     /// `farm`'s own stats after the engine has had time to finish at least
-    /// one job. Mirrors `stats_for` in `behaviour/data.rs`'s tests.
+    /// one job. Mirrors `stats_for` in `behaviour/data.rs`'s tests. 600
+    /// ticks (10 simulated seconds) rather than 120 (2s): the farm's own
+    /// preset is a 1.2s-mean service time at `service_cv: 0.4`, so a 2s
+    /// window leaves only a thin margin before the first job's randomly
+    /// drawn duration can miss it entirely; 10s comfortably covers even a
+    /// multiple-of-the-mean draw.
     fn farm_stats(patch: impl FnOnce(&mut NodeConfig)) -> NodeStats {
         let mut engine = Engine::new(topology(patch), 7);
-        for _ in 0..120 {
+        for _ in 0..600 {
             engine.advance(1000.0 / 60.0);
         }
         engine.snapshot().nodes.remove("farm").expect("farm node")

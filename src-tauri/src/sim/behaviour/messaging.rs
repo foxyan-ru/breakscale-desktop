@@ -1564,11 +1564,13 @@ mod tests {
     /// WHY: `behaviour-messaging.ts` (upstream `91e06bf8`, PR #61). Pure
     /// unit coverage of the helper itself: `Infinity` is a number and is
     /// not NaN, so only an explicit `is_finite()` guard (not `!is_nan()`)
-    /// catches it, and a value above `max` must be held there.
+    /// catches it -- and upstream's guard (`!Number.isFinite(v)`) routes a
+    /// non-finite value to `fallback`, same as `None`, not to `max`. A
+    /// huge but FINITE value (1e9 below) is the one held at `max`.
     #[test]
     fn clamp_int_guards_non_finite_and_caps_the_maximum() {
         assert_eq!(clamp_int(Some(f64::NAN), 1, 4, 64), 4);
-        assert_eq!(clamp_int(Some(f64::INFINITY), 1, 4, 64), 64);
+        assert_eq!(clamp_int(Some(f64::INFINITY), 1, 4, 64), 4);
         assert_eq!(clamp_int(Some(1e9), 1, 4, 64), 64);
         assert_eq!(clamp_int(None, 1, 4, 64), 4);
         assert_eq!(clamp_int(Some(8.9), 1, 4, 64), 8);

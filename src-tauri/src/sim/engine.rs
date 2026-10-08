@@ -883,6 +883,33 @@ pub struct Engine {
     tracing: Option<ReqHandle>,
     /// The last completed trace, handed to every snapshot until replaced.
     last_trace: Option<RequestTrace>,
+
+    /// Node ids with an active `with_node_ext` frame on the call stack
+    /// right now. A behaviour hook can re-enter the engine for the SAME
+    /// node synchronously -- e.g. `streambroker`'s `on_downstream_result`
+    /// pumps the next queued delivery via `emit_detached`, which can
+    /// resolve immediately against a zero-queue downstream capacity limit,
+    /// and that resolution reports back to the very broker node whose
+    /// `ext` is still checked out by the outer frame. `behaviour-
+    /// messaging.ts`'s own doc comment calls this out as an open question
+    /// "once sim::engine exists": in JS, re-entering just mutates the same
+    /// object; in Rust, `ext.take()` would hand the inner frame a `None`
+    /// it was never meant to see, which panicked at the downcast.
+    ///
+    /// This set turns that inner call into a no-op instead: a reentrant
+    /// hook invocation is skipped entirely rather than run against a
+    /// missing `ext`. That is a deliberate, narrow trade-off, not a full
+    /// fix -- a behaviour whose reentrant call would have flipped its own
+    /// bookkeeping (e.g. clearing an in-flight flag for the partition that
+    /// just resolved) does not get to do so, so that bookkeeping can be
+    /// left stuck until the next unrelated event nudges it. Preferred over
+    /// the alternative (deferring the reentrant call as a same-tick queued
+    /// event) for now because that would need threading the child's
+    /// result data through a new event variant rather than the call stack
+    /// it currently rides on; revisit if a kind other than streambroker's
+    /// own self-pumping is ever found relying on this path resolving
+    /// synchronously.
+    ext_in_progress: HashSet<String>,
 }
 
 impl Engine {
@@ -915,6 +942,7 @@ impl Engine {
             authored_instances: HashMap::new(),
             tracing: None,
             last_trace: None,
+            ext_in_progress: HashSet::new(),
         };
         engine.record_authored_capacity();
         engine.build_nodes();
@@ -1155,14 +1183,29 @@ impl Engine {
         node_id: &str,
         f: impl FnOnce(&mut Engine, &'static dyn ComponentBehaviour, &NodeView, &mut Ext) -> R,
     ) -> Option<R> {
+        // See `ext_in_progress`'s doc comment: a synchronous re-entry for
+        // this exact node has nothing safe to do here (its state is
+        // already being mutated by the outer frame), so it is a no-op
+        // rather than a double-take on `state.ext`.
+        if self.ext_in_progress.contains(node_id) {
+            return None;
+        }
+        self.ext_in_progress.insert(node_id.to_string());
         let (behaviour, view, mut ext) = {
-            let state = self.nodes.get_mut(node_id)?;
+            let state = match self.nodes.get_mut(node_id) {
+                Some(s) => s,
+                None => {
+                    self.ext_in_progress.remove(node_id);
+                    return None;
+                }
+            };
             (state.behaviour, NodeView::of(state), state.ext.take())
         };
         let result = f(self, behaviour, &view, &mut ext);
         if let Some(state) = self.nodes.get_mut(node_id) {
             state.ext = ext;
         }
+        self.ext_in_progress.remove(node_id);
         Some(result)
     }
 
@@ -3891,23 +3934,39 @@ mod tests {
             annotations: None,
         };
         let mut engine = Engine::new(topo, 3);
-        // Generous relative to the 10ms deadline, so every call issued in
-        // this window has definitely timed out and fully resolved by the
-        // end of it.
-        engine.advance(500.0);
+        // `advance()` clamps a single call to `MAX_DELTA_MS` (100ms), so
+        // reaching 500 simulated ms takes five calls, not one -- the same
+        // pattern every other multi-tick test in this module loops in
+        // frame-sized steps for.
+        for _ in 0..5 {
+            engine.advance(100.0);
+        }
 
         let total_requests = engine.total_requests;
         assert!(total_requests > 1.0, "test must generate multiple requests to meaningfully exercise the counter");
-        assert_eq!(
-            engine.total_failed, total_requests,
-            "every request must resolve as exactly one engine-level failure -- a double-counted timeout would read 2x total_requests"
+        // Not exact equality: the most recently arrived request(s) -- those
+        // still inside their 10ms deadline at the instant of this snapshot
+        // -- have not timed out yet and are legitimately still in flight.
+        // The invariant this test actually guards is "not double-counted"
+        // (the old bug read roughly 2x total_requests here), so a small
+        // tolerance for that handful of in-flight stragglers is correct;
+        // exact equality is not.
+        assert!(
+            engine.total_failed <= total_requests,
+            "engine-level failures must never exceed total requests -- a double-counted timeout would read 2x total_requests (requests {total_requests}, failed {})",
+            engine.total_failed
+        );
+        assert!(
+            total_requests - engine.total_failed <= 5.0,
+            "all but a handful of still-in-flight stragglers must have resolved as failures by now (requests {total_requests}, failed {})",
+            engine.total_failed
         );
 
         let snap = engine.snapshot();
         let client = snap.nodes.get("client").expect("client in snapshot");
         assert_eq!(
-            client.total_failed, total_requests,
-            "the client's own totalFailed must likewise count each timeout exactly once"
+            client.total_failed, engine.total_failed,
+            "the client's own totalFailed must match the engine's, not double- or under-count it"
         );
     }
 
@@ -3934,7 +3993,13 @@ mod tests {
         };
 
         let mut baseline = Engine::new(topo.clone(), 42);
-        baseline.advance(1000.0);
+        // Same 100ms-chunked loop the edited run below uses (`advance()`
+        // clamps a single call to `MAX_DELTA_MS`, 100ms) -- both runs must
+        // cover equal elapsed simulated time or the ratio compares a
+        // shorter window against a longer one instead of stable-vs-edited.
+        for _ in 0..10 {
+            baseline.advance(100.0);
+        }
         let baseline_count = baseline.total_requests;
         assert!(baseline_count > 0.0, "baseline run must generate traffic");
 
