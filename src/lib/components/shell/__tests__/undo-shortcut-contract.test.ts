@@ -126,8 +126,12 @@ describe('undo/redo wiring contract', () => {
     // guarded touches at :1156/:1234-1278 no-op inside a gesture too.
     expect(count(canvasSource, /sessionHistory\.touch\('resize'/g)).toBe(0);
 
-    // Inspector.svelte -- every knob rides one coalescing label.
-    expect(count(inspectorSource, /sessionHistory\.touch\('setting change'/g)).toBe(2);
+    // Inspector.svelte -- every knob rides one coalescing label: the
+    // generic numeric `commit()`, the traffic-pattern select
+    // (`onTrafficPatternChange`), and the enum select added for bulkhead
+    // mode (`onEnumCommit`, upstream `351327c4`, PR #77) all touch the
+    // same 'setting change' stream so they coalesce into one undo step.
+    expect(count(inspectorSource, /sessionHistory\.touch\('setting change'/g)).toBe(3);
 
     // Designs.svelte -- the two load paths, labelled like App.tsx's
     // replaceDesign calls (:1912 / :2131).
