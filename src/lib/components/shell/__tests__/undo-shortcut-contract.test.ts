@@ -144,11 +144,16 @@ describe('undo/redo wiring contract', () => {
     expect(count(pageSource, /sessionHistory\.commit\('challenge start'/g)).toBe(1);
     expect(count(pageSource, /sessionHistory\.touch\('setting change'/g)).toBe(2);
 
-    // 'duplicate'/'note size'/'note style' are web labels with NO desktop
-    // write path (those features do not exist here) -- their absence is
-    // the honest divergence, so pin it rather than inventing sites.
+    // 'note size'/'note style' -- the annotation format toolbar's writes
+    // (upstream `3ce685bd`/#76, `setNoteSize`/`setNoteStyle`), ported in
+    // Phase 3B. One call site each, matching web's own single commit per
+    // toolbar action.
+    expect(count(canvasSource, /sessionHistory\.commit\('note size'/g)).toBe(1);
+    expect(count(canvasSource, /sessionHistory\.commit\('note style'/g)).toBe(1);
+
+    // 'duplicate' is a web label with NO desktop write path (that feature
+    // does not exist here) -- its absence is the honest divergence, so pin
+    // it rather than inventing a site.
     expect(canvasSource).not.toContain("commit('duplicate'");
-    expect(canvasSource).not.toContain("commit('note size'");
-    expect(canvasSource).not.toContain("commit('note style'");
   });
 });
