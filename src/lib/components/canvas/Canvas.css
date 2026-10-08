@@ -758,6 +758,49 @@
   min-height: 1.5em;
 }
 
+/* Mirror `.cv-note`'s own face/weight/tone rules (above) onto the editor
+   overlay, so a note being edited keeps the same look it will render with
+   the instant the editor closes -- "kept in sync with the live note... on
+   every render" (upstream 3ce685bd), without which bold/italic/underline/
+   font/tone silently reset to plain-sans-upright while editing. */
+.cv-note-editor[data-font='mono'] {
+  font-family: var(--mono);
+}
+
+.cv-note-editor[data-font='hand'] {
+  font-family: var(--hand);
+}
+
+.cv-note-editor[data-font='serif'] {
+  font-family: var(--serif);
+}
+
+.cv-note-editor.is-bold {
+  font-weight: 700;
+}
+
+.cv-note-editor.is-italic {
+  font-style: italic;
+}
+
+.cv-note-editor.is-underline {
+  text-decoration: underline;
+}
+
+.cv-note-editor[data-tone='0'] { color: var(--ann-0-ink); }
+.cv-note-editor[data-tone='1'] { color: var(--ann-1-ink); }
+.cv-note-editor[data-tone='2'] { color: var(--ann-2-ink); }
+.cv-note-editor[data-tone='3'] { color: var(--ann-3-ink); }
+.cv-note-editor[data-tone='4'] { color: var(--ann-4-ink); }
+.cv-note-editor[data-tone='5'] { color: var(--ann-5-ink); }
+.cv-note-editor[data-tone='6'] { color: var(--ann-6-ink); }
+.cv-note-editor[data-tone='7'] { color: var(--ann-7-ink); }
+.cv-note-editor[data-tone='8'] { color: var(--ann-8-ink); }
+.cv-note-editor[data-tone='9'] { color: var(--ann-9-ink); }
+.cv-note-editor[data-tone='10'] { color: var(--ann-10-ink); }
+.cv-note-editor[data-tone='11'] { color: var(--ann-11-ink); }
+.cv-note-editor[data-tone='12'] { color: var(--ann-12-ink); }
+
 .cv-section-label-editor {
   font-family: var(--sans);
   font-size: 12px;

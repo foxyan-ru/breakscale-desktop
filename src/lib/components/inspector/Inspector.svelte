@@ -20,10 +20,16 @@
 	        only once simulationStore.snapshot has produced stats for this
 	        node -- absent (not zeroed) while the engine has not started yet,
 	        per MIGRATION_PLAN's loading-state note.
-	     4. For `client` only: a dedicated traffic section (rps + the traffic
+	     4. "Suggested fix": one grounded suggestion, shown only once this
+	        node's headroom (spare capacity -- field-schema's `headroomFor`)
+	        drops below 1.0x, i.e. it cannot keep up with what is arriving.
+	        Port of upstream `eb163673`/PR #71; text lives in
+	        `$lib/content/suggestions.ts`, gating in `headroomFor`/
+	        `HAS_THROUGHPUT_CEILING` (field-schema.ts).
+	     5. For `client` only: a dedicated traffic section (rps + the traffic
 	        pattern picker + its period), standing in for the web app's
 	        separately-imported `TrafficControl`.
-	     5. Every other applicable field, grouped exactly as the web app
+	     6. Every other applicable field, grouped exactly as the web app
 	        groups them ("What it does" / "How much it can handle" / "When
 	        things go wrong"), each field's live NodeStats reading shown
 	        directly under its control when the engine has one to show.
@@ -52,12 +58,14 @@
 		specFor,
 		fillPct,
 		formatFieldValue,
+		headroomFor,
 		liveReadout,
 		pct,
 		rate,
 		type InspectorField,
 		type RangeFieldSpec,
 	} from './field-schema';
+	import { suggestionFor } from '$lib/content/suggestions';
 	import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
 
 	/* ---------------------------------------------------------------- *
@@ -73,6 +81,17 @@
 	);
 
 	const fieldsForKind = $derived<InspectorField[]>(node ? FIELDS_BY_KIND[node.kind] : []);
+
+	/** Spare capacity as a multiple of arrivals, or null when the kind has no
+	 * throughput ceiling or nothing has arrived yet -- see `headroomFor`. */
+	const headroom = $derived<number | null>(node ? headroomFor(node, stats) : null);
+
+	/** One grounded suggestion, only once this node cannot keep up (headroom
+	 * < 1x) -- the same threshold the web app's "Spare capacity" reading is
+	 * toned by. Port of upstream `eb163673`/PR #71. */
+	const suggestion = $derived<string | null>(
+		node && headroom !== null && headroom < 1 ? suggestionFor(node.kind) : null,
+	);
 
 	/** Every applicable field except the three the dedicated traffic section owns. */
 	const bodyFields = $derived<InspectorField[]>(
@@ -276,6 +295,13 @@
 						<span class="pill">p99 {Math.round(stats.p99)}ms</span>
 					{/if}
 				</div>
+			{/if}
+
+			{#if suggestion}
+				<section class="ins-section">
+					<h3 class="label">Suggested fix</h3>
+					<p class="prose ins-suggestion">{suggestion}</p>
+				</section>
 			{/if}
 
 			{#if n.kind === 'client'}
@@ -503,6 +529,13 @@
 	}
 
 	.ins-hint {
+		color: var(--text-dim);
+	}
+
+	/* Teaching prose like .ins-blurb/.ins-hint, not a live reading like
+	   .ins-live below -- PR #71 (eb163673) ports this as its own class so
+	   the suggestion is a distinct, addressable paragraph. */
+	.ins-suggestion {
 		color: var(--text-dim);
 	}
 

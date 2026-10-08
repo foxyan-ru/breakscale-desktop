@@ -13,6 +13,7 @@
 
 import { baselineIn, descentBelow, measureText } from './text-metrics';
 import type { TextStyle } from './text-metrics';
+import { NOTE_MIN_WIDTH, NOTE_MAX_WIDTH } from '$lib/domain/annotations';
 import type { AnnotationFont, Note } from '$lib/domain/annotations';
 
 /** Drag payload type for the palette's annotation rows. */
@@ -155,6 +156,48 @@ export interface NoteLayout {
   height: number;
   /** y of the first line's baseline, matching a text box of lineH boxes. */
   baseline: number;
+}
+
+/**
+ * The width an `autoResize` note hugs: the widest UNWRAPPED line, clamped to
+ * the same bounds a fixed-width note's drag handle obeys.
+ *
+ * Upstream `3ce685bd`'s `textWysiwyg.ts`/`annotationLayout.ts` call this
+ * "hugging its widest line" -- the note never wraps on its own, it grows (or
+ * shrinks) to fit what was actually typed, and only a side-handle drag ever
+ * fixes a width from then on (see `Note.autoResize`'s doc comment). Clamped
+ * rather than left unbounded so one extremely long unbroken line (a URL, a
+ * stack trace) cannot paint a note off the edge of the canvas; the browser's
+ * own line-break-on-space already keeps ordinary prose well under the
+ * maximum in practice.
+ */
+export function naturalNoteWidth(
+  text: string,
+  size: Note['size'],
+  font?: AnnotationFont,
+  bold?: boolean,
+  italic?: boolean,
+  scale = 1,
+): number {
+  const style = noteStyle(size, font, bold, italic, scale);
+  let widest = 0;
+  for (const line of text.split('\n')) {
+    const w = measureText(line, style);
+    if (w > widest) widest = w;
+  }
+  return Math.min(Math.max(widest, NOTE_MIN_WIDTH), NOTE_MAX_WIDTH);
+}
+
+/**
+ * The width a note actually lays out at: its own `width` field, unless
+ * `autoResize` is set, in which case the stored width is stale decoration
+ * (never read while the flag is on, matching web's comment "Ignored while
+ * autoResize is set") and the live natural width takes over instead.
+ */
+export function effectiveNoteWidth(note: Note): number {
+  return note.autoResize
+    ? naturalNoteWidth(note.text, note.size, note.font, note.bold, note.italic, note.scale)
+    : note.width;
 }
 
 export function layoutNote(

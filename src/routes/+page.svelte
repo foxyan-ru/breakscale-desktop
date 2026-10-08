@@ -296,7 +296,13 @@
     const n = topologyStore.topology.nodes.length;
     const x = 160 + (n % 5) * 220;
     const y = 160 + Math.floor(n / 5) * 140;
-    const node = makeNode(kind, x, y);
+    // Read the LIVE topology mirror for collision-checking, same as
+    // Canvas.svelte's own palette-drop path (`onDrop`) -- upstream
+    // `4fd46c47`/#65, "never mint a node id that is already on the canvas".
+    // Minimal, deliberate touch to this otherwise off-limits file: item 5 of
+    // this task's checklist covers every add path, and this click-to-add
+    // one would otherwise be the one place left unguarded.
+    const node = makeNode(kind, x, y, new Set(topologyStore.topology.nodes.map((nd) => nd.id)));
     // Baseline BEFORE the add: one entry named 'add' whose topology lacks
     // the node, selection and all (App.tsx's handleAddNode, 'add').
     sessionHistory.commit('add', currentSnapshot());

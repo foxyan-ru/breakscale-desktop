@@ -8,12 +8,14 @@
 //! over unchanged: one JSON file naming which files it carries, each one's
 //! raw text keyed by file name, restored by REPLACING rather than merging.
 //!
-//! `saved_designs.json` is the one file whose contents are validated deeply
-//! (each row's topology must pass `design_file::is_topology`, same as the
-//! TS `acceptable()` reaches for `isTopology`); `preferences.json` and
-//! `layout.json` do not have Rust structs elsewhere in this codebase yet, so
-//! they are carried as opaque, shape-checked-only JSON, exactly as the TS
-//! `acceptable()` treats any key it does not special-case.
+//! `saved_designs.json` is checked only for being a JSON array, same depth as
+//! the TS `acceptable()`'s `Array.isArray(parsed)` -- a per-row `topology`
+//! check here would reject the whole file over one row, which is exactly the
+//! erasure the rejected-design guard (`saved_designs::Shelf`, upstream #54)
+//! exists to prevent; `preferences.json` and `layout.json` do not have Rust
+//! structs elsewhere in this codebase yet, so they are carried as opaque,
+//! shape-checked-only JSON, exactly as the TS `acceptable()` treats any key
+//! it does not special-case.
 
 use serde::Serialize;
 
@@ -110,17 +112,20 @@ pub fn write_backup(app_data_dir: &std::path::Path, dest: &std::path::Path) -> A
 
 /// Is this stored file's text one we are willing to write back?
 ///
-/// Ported from `acceptable()` in backup.ts, with one deliberate
-/// strengthening: the TS `acceptable()` only checks `Array.isArray(parsed)`
-/// for the designs key and leaves individual bad rows for the store's own
-/// loader to drop later (see the comment in `savedDesigns.ts`'s
-/// `parseEntry`). This port instead validates every row's `topology` field
-/// against `design_file::is_topology` right here, per this task's brief
-/// ("each row's topology field must pass it, same as the TS acceptable()
-/// does via isTopology") -- so a `saved_designs.json` with even one
-/// malformed row is rejected wholesale rather than silently trimmed during
-/// restore. Flagged explicitly: this is stricter than the literal TS
-/// behaviour for this one key.
+/// Ported from `acceptable()` in backup.ts. An earlier version of this port
+/// deliberately strengthened the designs-key check to require every row's
+/// `topology` to pass `design_file::is_topology`, rejecting the whole file
+/// over one malformed row -- self-flagged at the time as stricter than the
+/// literal TS behaviour. Upstream PR #54 (`e0241b03`) makes that
+/// strengthening actively wrong: the whole point of the rejected-design
+/// guard (see `saved_designs::Shelf`) is that a row this build cannot open
+/// must survive, not be erased, and a backup restore that refuses to write
+/// `saved_designs.json` back because it contains exactly such a row erases
+/// it just the same, only via restore instead of save/rename/delete. So this
+/// now matches the TS `acceptable()` (backup.ts:99-104 in the pinned local
+/// copy) again: only `Array.isArray(parsed)` is checked here, and a bad row
+/// is the shelf's own problem to keep-but-not-show, not this gate's to
+/// discard.
 fn acceptable(file: &str, value: &str) -> bool {
     let parsed: serde_json::Value = match serde_json::from_str(value) {
         Ok(v) => v,
@@ -128,14 +133,7 @@ fn acceptable(file: &str, value: &str) -> bool {
     };
 
     if file == "saved_designs.json" {
-        let Some(arr) = parsed.as_array() else {
-            return false;
-        };
-        return arr.iter().all(|row| {
-            row.as_object()
-                .and_then(|o| o.get("topology"))
-                .is_some_and(|t| super::design_file::is_topology(t).is_some())
-        });
+        return parsed.as_array().is_some();
     }
 
     // preferences.json / layout.json: shape-checked only, not deeply
@@ -282,6 +280,54 @@ mod tests {
         assert_eq!(r.restored.as_deref(), Some(&["preferences.json".to_string()][..]));
         let written = std::fs::read_to_string(dir.join("preferences.json")).unwrap();
         assert_eq!(written, "{\"theme\":\"dark\"}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// WHY: a `saved_designs.json` backed up while it held a row the guard
+    /// kept-but-could-not-open (#54) must still restore -- `acceptable()`
+    /// rejecting the whole array over that one row would erase it on
+    /// restore, the same mistake the guard exists to prevent on save/rename/
+    /// delete. Pinned by checking the row survives byte-for-byte, since
+    /// `restore_backup` writes the designs text back verbatim rather than
+    /// reparsing it.
+    #[test]
+    fn restore_keeps_a_designs_backup_with_an_unreadable_row() {
+        let dir = tmp_dir("restore_unreadable_row");
+        let dup_node = serde_json::json!({
+            "id": "dup", "kind": "client", "label": "dup", "x": 0, "y": 0,
+            "config": {
+                "capacity": 1, "serviceMs": 1, "serviceCv": 0, "queueLimit": 1,
+                "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 1,
+                "replicaCount": 1, "replicationLagMs": 0, "readFraction": 1,
+                "shardCount": 1, "shardCapacity": 1, "hotKeyFraction": 0
+            }
+        });
+        let designs_text = serde_json::json!([
+            {
+                "id": "a",
+                "name": "Week 3 coursework",
+                "savedAt": 1,
+                "topology": { "nodes": [dup_node.clone(), dup_node], "edges": [] }
+            }
+        ])
+        .to_string();
+
+        let backup = serde_json::json!({
+            "app": "breakscale-backup",
+            "version": 1,
+            "savedAt": "2024-01-15T10:30:00.000Z",
+            "data": { "saved_designs.json": designs_text }
+        })
+        .to_string();
+
+        let r = restore_backup(&dir, &backup);
+        assert!(r.ok);
+        assert_eq!(
+            r.restored.as_deref(),
+            Some(&["saved_designs.json".to_string()][..])
+        );
+        let written = std::fs::read_to_string(dir.join("saved_designs.json")).unwrap();
+        assert_eq!(written, designs_text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

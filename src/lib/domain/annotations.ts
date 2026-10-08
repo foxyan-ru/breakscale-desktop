@@ -24,8 +24,30 @@ export interface Note {
   /**
    * Wrap width in world units. Height follows from the text, so a note never
    * has a stale height stored against content that has since changed.
+   *
+   * Ignored while `autoResize` is set: an auto-sized note never wraps.
    */
   width: number;
+  /**
+   * The note sizes itself to its text: no wrapping, the box is as wide as
+   * the widest line, and typing grows it. What Excalidraw calls autoResize
+   * and what Eraser's text does until a side is dragged. A freshly placed
+   * note is born this way (`makeNote` below); dragging an edge clears it and
+   * the dragged width becomes the fixed wrap width from then on. Absent
+   * means fixed width, which is what every note that existed before this
+   * flag was, so a design saved before this port opens unchanged.
+   *
+   * Field-for-field port of upstream `3ce685bd` (PR #76, "rebuild note text
+   * editing on a real WYSIWYG textarea") -- `src/sim/annotations.ts` on
+   * upstream main, read via `gh api` since it postdates this repo's pinned
+   * local reference copy. "wire bit 12" in that PR's notes refers to the
+   * web's share-link bit-packing (`src/share/wire.ts`), which the desktop
+   * has no equivalent of (no `share.ts`/`wire.ts`), so there is nothing to
+   * port there -- this field only needs to round-trip through
+   * `sanitizeAnnotations` and the Tauri design-file JSON, both of which
+   * already serialise every optional field as plain JSON.
+   */
+  autoResize?: boolean;
   /**
    * Relative size. Notes serve two different jobs: a heading that titles a
    * whole diagram, and a small aside next to one component. One scale would
@@ -145,6 +167,15 @@ export function isNote(a: Annotation): a is Note {
 
 export const NOTE_DEFAULT_WIDTH = 220;
 /**
+ * Longest text a note will hold, in UTF-16 units (what a textarea counts).
+ *
+ * Replaces the repeated magic number `2000` (upstream `3ce685bd`): a bound
+ * `sanitizeAnnotations` applies to text arriving from an imported file, so
+ * the editor can never produce a note that would be truncated on its next
+ * round trip through this same function.
+ */
+export const NOTE_MAX_CHARS = 2000;
+/**
  * Wrap-width bounds for a note.
  *
  * Only the WIDTH is resizable: a note's height is derived from its wrapped
@@ -190,6 +221,9 @@ export function makeNote(x: number, y: number, text = 'Note'): Note {
     y,
     width: NOTE_DEFAULT_WIDTH,
     size: 'md',
+    // Born hugging its text; dragging a side pins the width (upstream
+    // `3ce685bd`: "Born hugging its text; a side drag pins the width").
+    autoResize: true,
   };
 }
 
@@ -246,7 +280,7 @@ export function sanitizeAnnotations(input: unknown): Annotation[] {
       out.push({
         id,
         kind: 'note',
-        text: text.slice(0, 2000),
+        text: text.slice(0, NOTE_MAX_CHARS),
         x,
         y,
         width: clamp(width ?? NOTE_DEFAULT_WIDTH, NOTE_MIN_WIDTH, NOTE_MAX_WIDTH),
@@ -258,6 +292,10 @@ export function sanitizeAnnotations(input: unknown): Annotation[] {
         ...(a.italic === true ? { italic: true } : {}),
         ...noteScale(a.scale),
         ...(a.underline === true ? { underline: true } : {}),
+        // Round-trip rather than default true: an imported note that never
+        // set the flag is a fixed-width note from before this port, and
+        // must keep reading as one (upstream `3ce685bd`).
+        ...(a.autoResize === true ? { autoResize: true } : {}),
       });
       seen.add(id);
     } else if (a.kind === 'section') {

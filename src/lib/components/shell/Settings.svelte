@@ -146,7 +146,7 @@
 		{
 			key: 'snapToGrid',
 			label: 'Snap to the grid',
-			hint: 'Keep components aligned while dragging.',
+			hint: 'Keep components aligned while dragging. G toggles it, and holding Ctrl bypasses it for one drag.',
 		},
 		{
 			key: 'minimap',

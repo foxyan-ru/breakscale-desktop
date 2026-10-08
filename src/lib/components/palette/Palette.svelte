@@ -20,6 +20,139 @@
    * here, or hardcode the same literal.
    */
   export const ANN_DND_MIME = 'application/x-breakscale-annotation';
+
+  /* ------------------------------------------------------------------ *
+   * The pickup -- ported from upstream commit `dc9c1a07` ("carry a card,
+   * not a screenshot of the row"), `src/components/Palette.tsx`.
+   *
+   * The browser's default drag image is a translucent screenshot of the
+   * whole row, list chrome and all, which reads as dragging a menu entry.
+   * The thing being carried is a component about to exist on the canvas,
+   * so what follows the cursor is a small card instead: the row's own
+   * chip and name on the node radius with a lift shadow.
+   *
+   * A native drag image is sampled ONCE at dragstart and can never
+   * animate, so the card is not handed to `setDragImage`. The native
+   * image is replaced with a transparent pixel and the card is a real
+   * element that follows the pointer from `dragover` on the document: it
+   * pops in when picked up and banks a few degrees with the horizontal
+   * velocity of the hand. Cost per move is one `translate3d` write on a
+   * fixed, `pointer-events: none` element -- compositor work only,
+   * nothing re-renders and nothing lays out. Module scope (not component
+   * state) matches upstream: a drag is a singleton gesture, the browser
+   * never starts a second one before `dragend` ends the first.
+   * ------------------------------------------------------------------ */
+
+  /**
+   * Transparent stand-in for the native drag image. Created once and kept
+   * hot: `setDragImage` needs a DECODED image at dragstart, and a data URI
+   * this size is decoded long before a human can begin a drag. Guarded for
+   * SSR, where `Image` does not exist when this module is first evaluated.
+   */
+  const BLANK_DRAG_IMAGE = typeof Image !== 'undefined' ? new Image() : null;
+  if (BLANK_DRAG_IMAGE) {
+    BLANK_DRAG_IMAGE.src =
+      'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  }
+
+  /**
+   * The card, built from the row's rendered DOM rather than re-created
+   * from scratch: the glyph is cloned as-is, the name is read back as
+   * text, and the `data-kind` attribute rides along so the chip keeps its
+   * colour trio through the same `[data-kind]` contract every other
+   * surface uses (see the file header comment on KIND COLOUR).
+   */
+  function buildCard(row: HTMLButtonElement): HTMLDivElement | null {
+    const glyph = row.querySelector('.pal-glyph');
+    const name = row.querySelector('.pal-name')?.textContent;
+    if (!glyph || !name) return null;
+    const card = document.createElement('div');
+    card.className = 'pal-carry-card';
+    const kind = row.getAttribute('data-kind');
+    if (kind !== null) card.setAttribute('data-kind', kind);
+    card.appendChild(glyph.cloneNode(true));
+    const label = document.createElement('span');
+    label.className = 'pal-carry-name';
+    label.textContent = name;
+    card.appendChild(label);
+    return card;
+  }
+
+  // Module state for the one live preview. A drag is a singleton gesture.
+  let carryEl: HTMLDivElement | null = null;
+  let carryCard: HTMLDivElement | null = null;
+  let carryX = 0;
+
+  function moveCarry(e: globalThis.DragEvent): void {
+    if (!carryEl) return;
+    carryEl.style.transform = `translate3d(${e.clientX}px, ${e.clientY}px, 0)`;
+    // Bank with the hand. The inner card owns the rotation and eases it
+    // with its own transition, so the outer element can jump to the
+    // pointer with no easing at all: position must never lag the cursor,
+    // only the tilt may.
+    const dx = e.clientX - carryX;
+    carryX = e.clientX;
+    if (carryCard) {
+      const tilt = Math.max(-6, Math.min(6, dx * 0.5));
+      carryCard.style.transform = `rotate(${tilt}deg)`;
+    }
+  }
+
+  function endCarry(): void {
+    document.removeEventListener('dragover', moveCarry);
+    carryEl?.remove();
+    carryEl = null;
+    carryCard = null;
+  }
+
+  /**
+   * Fallback when the blank image is somehow not ready: the same card,
+   * parked off screen and sampled once by `setDragImage`. Static, but
+   * still a card.
+   */
+  function setStaticCardImage(event: globalThis.DragEvent): void {
+    const dt = event.dataTransfer;
+    if (!dt) return;
+    const row = event.currentTarget as HTMLButtonElement;
+    const card = buildCard(row);
+    if (!card) return;
+    const park = document.createElement('div');
+    park.className = 'pal-carry-park';
+    park.appendChild(card);
+    document.body.appendChild(park);
+    const rect = card.getBoundingClientRect();
+    dt.setDragImage(card, rect.width / 2, rect.height / 2);
+    setTimeout(() => park.remove(), 0);
+  }
+
+  /** Arms the custom carry preview on dragstart. Call after `dt.setData`. */
+  function startCarry(event: globalThis.DragEvent): void {
+    const dt = event.dataTransfer;
+    if (!dt || typeof dt.setDragImage !== 'function') return;
+    if (!BLANK_DRAG_IMAGE?.complete) {
+      setStaticCardImage(event);
+      return;
+    }
+    const row = event.currentTarget as HTMLButtonElement;
+    const card = buildCard(row);
+    if (!card) return;
+    endCarry(); // a stale preview from an interrupted drag must not linger
+    dt.setDragImage(BLANK_DRAG_IMAGE, 0, 0);
+
+    const outer = document.createElement('div');
+    outer.className = 'pal-carry';
+    const pop = document.createElement('div');
+    pop.className = 'pal-carry-pop';
+    pop.appendChild(card);
+    outer.appendChild(pop);
+    outer.style.transform = `translate3d(${event.clientX}px, ${event.clientY}px, 0)`;
+    document.body.appendChild(outer);
+
+    carryEl = outer;
+    carryCard = card;
+    carryX = event.clientX;
+    document.addEventListener('dragover', moveCarry);
+  }
 </script>
 
 <script lang="ts">
@@ -219,6 +352,8 @@
     // Must match what Canvas checks for in ondragover / ondrop.
     dt.setData(NODE_DND_MIME, kind);
     dt.effectAllowed = 'copy';
+    // dc9c1a07: carry the row's own card, not the browser's row screenshot.
+    startCarry(e);
   }
 
   function handleAnnDragStart(e: DragEvent, tool: AnnotationTool): void {
@@ -226,6 +361,8 @@
     if (!dt) return;
     dt.setData(ANN_DND_MIME, tool);
     dt.effectAllowed = 'copy';
+    // dc9c1a07: same carried-card pickup as the component rows above.
+    startCarry(e);
   }
 
   function onAnnKeyDown(e: KeyboardEvent, tool: AnnotationTool): void {
@@ -337,6 +474,7 @@
                   data-kind={kind}
                   draggable="true"
                   ondragstart={(e) => handleDragStart(e, kind)}
+                  ondragend={endCarry}
                   onclick={() => onAdd(kind)}
                   onkeydown={(e) => onRowKeyDown(e, kind)}
                   title={KIND_HINT[kind]}
@@ -382,6 +520,7 @@
                   aria-pressed={armedTool === row.tool}
                   draggable="true"
                   ondragstart={(e) => handleAnnDragStart(e, row.tool)}
+                  ondragend={endCarry}
                   onclick={() => onAddAnnotation?.(row.tool)}
                   onkeydown={(e) => onAnnKeyDown(e, row.tool)}
                   title={row.hint}
@@ -647,6 +786,76 @@
 
   .pal-row:hover .pal-glyph {
     transform: scale(1.06);
+  }
+
+  /* The carry: what the pointer holds once a row is picked up. Ported from
+     Palette.css (commit `dc9c1a07`), "carry a card, not a screenshot of the
+     row" -- ties to `startCarry`/`moveCarry`/`endCarry` in the module script
+     above. Three layers, each owning ONE transform so none of them fight:
+     the outer .pal-carry jumps to the pointer with no easing at all, because
+     position lagging the cursor reads as sluggishness; .pal-carry-pop owns
+     centring and the pickup pop; the card itself owns the velocity tilt,
+     eased by its own transition. pointer-events: none keeps it out of every
+     hit test, so Canvas's drop handling never knows it exists. Everything
+     here is transform and opacity -- compositor work only -- and this
+     repo's blanket `*` reduced-motion rule (`app.css`'s final
+     `@media (prefers-reduced-motion: reduce)` block) already flattens the
+     pop and the tilt to nothing, so no local override is needed here. */
+  .pal-carry {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 500; /* above the tooltip layer (400, Tooltip.svelte): nothing outranks the hand */
+    pointer-events: none;
+    will-change: transform;
+  }
+
+  @keyframes pal-carry-pop {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.85);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+  }
+
+  .pal-carry-pop {
+    transform: translate(-50%, -50%);
+    animation: pal-carry-pop var(--dur-base) var(--ease-out);
+  }
+
+  /* The card: the row's chip and name on the node radius with a lift
+     shadow, because the thing being carried is a component about to exist
+     on the canvas, not a line of a list. Colour comes through the same
+     [data-kind] contract as the chip it clones (see the file header
+     comment on KIND COLOUR). */
+  .pal-carry-card {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-3);
+    border: var(--bw) solid var(--k-stroke, var(--border-strong));
+    border-radius: var(--r-node);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-lg);
+    font-size: var(--fs-base);
+    white-space: nowrap;
+    transition: transform var(--dur-base) var(--ease);
+  }
+
+  .pal-carry-name {
+    font-weight: var(--fw-med);
+  }
+
+  /* Off-screen parking for the static fallback, when the blank drag image
+     is not decoded yet: the same card, sampled once by setDragImage. */
+  .pal-carry-park {
+    position: fixed;
+    top: -1000px;
+    left: -1000px;
   }
 
   .pal-names {

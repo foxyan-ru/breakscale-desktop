@@ -170,25 +170,85 @@ fn parse_entry(raw: &serde_json::Value) -> Option<SavedDesign> {
     })
 }
 
-/// Everything on the shelf, newest first. Never errors: an unreadable,
-/// missing or corrupt file reads back as an empty shelf, exactly like the
-/// TS `loadDesigns()`'s try/catch.
-pub fn load_designs(path: &std::path::Path) -> Vec<SavedDesign> {
+/// The shelf as it actually sits on disk: the rows this version understands,
+/// and the rows it does not.
+///
+/// The second list is why this exists. Dropping a row that fails to parse is
+/// right for DISPLAY and wrong for STORAGE: every mutation on the shelf is
+/// read, change, write, so a row dropped on the way in was a row deleted on
+/// the way out -- saving an unrelated design silently erased someone else's,
+/// permanently, and so did renaming or deleting a different one. Ported from
+/// `Shelf`/`readShelf` in savedDesigns.ts (upstream PR #54, `e0241b03`): a
+/// row this build cannot open is not necessarily a row that is gone -- it may
+/// be a newer format, or a design tripped by a bug a later build fixes -- so
+/// the unreadable rows are now carried through verbatim instead of dropped.
+struct Shelf {
+    designs: Vec<SavedDesign>,
+    /// Rows that failed to parse, exactly as stored. Never inspected further.
+    unreadable: Vec<serde_json::Value>,
+}
+
+/// Read the shelf, splitting what parsed from what did not. Never errors: an
+/// unreadable, missing or corrupt file reads back as an empty shelf, exactly
+/// like the TS `readShelf()`'s try/catch.
+fn read_shelf(path: &std::path::Path) -> Shelf {
+    let empty = || Shelf {
+        designs: Vec::new(),
+        unreadable: Vec::new(),
+    };
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(_) => return Vec::new(),
+        Err(_) => return empty(),
     };
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
-        Err(_) => return Vec::new(),
+        Err(_) => return empty(),
     };
     let Some(arr) = parsed.as_array() else {
-        return Vec::new();
+        return empty();
     };
 
-    let mut designs: Vec<SavedDesign> = arr.iter().filter_map(parse_entry).collect();
+    let mut designs: Vec<SavedDesign> = Vec::new();
+    let mut unreadable: Vec<serde_json::Value> = Vec::new();
+    for row in arr {
+        match parse_entry(row) {
+            Some(entry) => designs.push(entry),
+            // Bounded for the same reason MAX_SAVED exists: rows nobody can
+            // open must not grow the file without limit. Past the cap the
+            // oldest bytes go, the same trade the readable half already
+            // makes -- ported from `readShelf`'s
+            // `unreadable.length < MAX_SAVED` (#54).
+            None if unreadable.len() < MAX_SAVED => unreadable.push(row.clone()),
+            None => {}
+        }
+    }
     designs.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
-    designs
+    Shelf { designs, unreadable }
+}
+
+/// Everything on the shelf this build can open, newest first.
+pub fn load_designs(path: &std::path::Path) -> Vec<SavedDesign> {
+    read_shelf(path).designs
+}
+
+/// Write the shelf back: the readable rows (serialised fresh), followed by
+/// the unreadable ones (written back exactly as the `serde_json::Value` they
+/// were read as) -- ported from `write()`'s `[...designs, ...unreadable]` in
+/// savedDesigns.ts (#54). Order among the unreadable rows does not matter:
+/// nothing reads them, and the readable half is already sorted.
+fn write_shelf(
+    path: &std::path::Path,
+    designs: &[SavedDesign],
+    unreadable: &[serde_json::Value],
+) -> AppResult<()> {
+    let mut combined: Vec<serde_json::Value> =
+        Vec::with_capacity(designs.len() + unreadable.len());
+    for d in designs {
+        combined.push(serde_json::to_value(d)?);
+    }
+    combined.extend(unreadable.iter().cloned());
+    let text = serde_json::to_string_pretty(&combined)?;
+    atomic_write(path, &text)
 }
 
 /// The list the interface renders, without the topologies.
@@ -222,7 +282,14 @@ pub fn save_design(path: &std::path::Path, name: &str, topology: &Topology) -> S
         return SaveResult::err("Give the design a name first.");
     }
 
-    let mut designs = load_designs(path);
+    // WHY: read_shelf/write_shelf carry the unreadable half through this
+    // mutation untouched, so saving one design can no longer erase a
+    // different, unopenable one -- ported from `saveDesign`'s
+    // `readShelf()` / `write(next, unreadable)` in savedDesigns.ts (#54).
+    let Shelf {
+        mut designs,
+        unreadable,
+    } = read_shelf(path);
     let existing = designs
         .iter()
         .position(|d| d.name.to_lowercase() == clean.to_lowercase());
@@ -251,13 +318,7 @@ pub fn save_design(path: &std::path::Path, name: &str, topology: &Topology) -> S
         designs.truncate(MAX_SAVED);
     }
 
-    let text = match serde_json::to_string_pretty(&designs) {
-        Ok(t) => t,
-        Err(_) => {
-            return SaveResult::err("There is no room left on this device to save another design.");
-        }
-    };
-    if atomic_write(path, &text).is_err() {
+    if write_shelf(path, &designs, &unreadable).is_err() {
         return SaveResult::err("There is no room left on this device to save another design.");
     }
 
@@ -274,24 +335,33 @@ pub fn get_design(path: &std::path::Path, id: &str) -> Option<SavedDesign> {
 /// caller as `AppError::Io`, per the `AppResult<()>` signature specified
 /// for this port -- errors reaching the frontend should say so rather than
 /// pretending the delete worked.
+///
+/// WHY: reads/writes through `Shelf` rather than `load_designs`, so deleting
+/// one design no longer rewrites the whole file from the readable rows only
+/// -- that used to silently erase any row that failed to parse. Ported from
+/// `deleteDesign`'s `write(designs.filter(...), unreadable)` (#54).
 pub fn delete_design(path: &std::path::Path, id: &str) -> AppResult<()> {
-    let designs: Vec<SavedDesign> = load_designs(path)
-        .into_iter()
-        .filter(|d| d.id != id)
-        .collect();
-    let text = serde_json::to_string_pretty(&designs)?;
-    atomic_write(path, &text)
+    let Shelf { designs, unreadable } = read_shelf(path);
+    let designs: Vec<SavedDesign> = designs.into_iter().filter(|d| d.id != id).collect();
+    write_shelf(path, &designs, &unreadable)
 }
 
 /// Rename in place. Returns `false` when the name is empty, already taken
 /// by a different id, the id does not exist, or the write itself fails.
+///
+/// WHY: carries the unreadable half through this mutation too, same as
+/// `save_design`/`delete_design` -- ported from `renameDesign`'s
+/// `write(designs.with(i, ...), unreadable)` (#54).
 pub fn rename_design(path: &std::path::Path, id: &str, name: &str) -> bool {
     let clean: String = name.trim().chars().take(MAX_NAME).collect();
     if clean.is_empty() {
         return false;
     }
 
-    let mut designs = load_designs(path);
+    let Shelf {
+        mut designs,
+        unreadable,
+    } = read_shelf(path);
     let taken = designs
         .iter()
         .any(|d| d.id != id && d.name.to_lowercase() == clean.to_lowercase());
@@ -304,11 +374,7 @@ pub fn rename_design(path: &std::path::Path, id: &str, name: &str) -> bool {
     };
     designs[idx].name = clean;
 
-    let text = match serde_json::to_string_pretty(&designs) {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-    atomic_write(path, &text).is_ok()
+    write_shelf(path, &designs, &unreadable).is_ok()
 }
 
 #[cfg(test)]
@@ -374,5 +440,195 @@ mod tests {
         let result = save_design(&path, "   ", &topology);
         assert!(!result.ok);
         assert_eq!(result.error.as_deref(), Some("Give the design a name first."));
+    }
+
+    // -- Rejected-design guard (#54): a row this build cannot open must --
+    // -- survive every mutation instead of being silently rewritten away. --
+    // Ported from `savedDesigns.rejected.test.ts` upstream; the fixture there
+    // is a topology with a duplicate node id (the shape a palette-add
+    // produces after a reload), reused here for the same reason: it is the
+    // failure that actually happens, not hand-corrupted JSON.
+
+    /// A row whose topology fails `is_topology` (two nodes share an id), so
+    /// `parse_entry` returns `None` and it lands in the shelf's unreadable
+    /// half.
+    fn unreadable_row(id: &str, name: &str, saved_at: i64) -> serde_json::Value {
+        let node = serde_json::json!({
+            "id": "dup", "kind": "client", "label": "dup", "x": 0, "y": 0,
+            "config": {
+                "capacity": 1, "serviceMs": 1, "serviceCv": 0, "queueLimit": 1,
+                "hitRate": 0, "errorRate": 0, "timeoutMs": 0, "retries": 0, "rps": 1,
+                "replicaCount": 1, "replicationLagMs": 0, "readFraction": 1,
+                "shardCount": 1, "shardCapacity": 1, "hotKeyFraction": 0
+            }
+        });
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "savedAt": saved_at,
+            "topology": { "nodes": [node.clone(), node], "edges": [] }
+        })
+    }
+
+    fn healthy_row(id: &str, name: &str, saved_at: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "savedAt": saved_at,
+            "topology": sample_topology()
+        })
+    }
+
+    fn seed(path: &std::path::Path, rows: Vec<serde_json::Value>) {
+        std::fs::write(path, serde_json::to_string_pretty(&rows).unwrap()).unwrap();
+    }
+
+    fn raw_rows(path: &std::path::Path) -> Vec<serde_json::Value> {
+        let text = std::fs::read_to_string(path).unwrap();
+        serde_json::from_str::<serde_json::Value>(&text)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    fn cleanup(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("json.tmp"));
+    }
+
+    #[test]
+    fn rejected_design_is_kept_off_the_shelf() {
+        let path = tmp_path("rejected_off_shelf");
+        seed(
+            &path,
+            vec![
+                unreadable_row("a", "Week 3 coursework", 1),
+                healthy_row("b", "Fine one", 2),
+            ],
+        );
+        let names: Vec<String> = load_designs(&path).into_iter().map(|d| d.name).collect();
+        assert_eq!(names, vec!["Fine one".to_string()]);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rejected_design_survives_an_unrelated_save() {
+        let path = tmp_path("rejected_survives_save");
+        seed(
+            &path,
+            vec![
+                unreadable_row("a", "Week 3 coursework", 1),
+                healthy_row("b", "Fine one", 2),
+            ],
+        );
+        let topology: Topology = serde_json::from_value(sample_topology()).unwrap();
+        assert!(save_design(&path, "Something new", &topology).ok);
+
+        let names: Vec<String> = raw_rows(&path)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"Week 3 coursework".to_string()));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rejected_design_survives_deleting_a_different_design() {
+        let path = tmp_path("rejected_survives_delete");
+        seed(
+            &path,
+            vec![
+                unreadable_row("a", "Week 3 coursework", 1),
+                healthy_row("b", "Fine one", 2),
+            ],
+        );
+        delete_design(&path, "b").unwrap();
+
+        let names: Vec<String> = raw_rows(&path)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"Week 3 coursework".to_string()));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rejected_design_survives_renaming_a_different_design() {
+        let path = tmp_path("rejected_survives_rename");
+        seed(
+            &path,
+            vec![
+                unreadable_row("a", "Week 3 coursework", 1),
+                healthy_row("b", "Fine one", 2),
+            ],
+        );
+        assert!(rename_design(&path, "b", "Renamed"));
+
+        let names: Vec<String> = raw_rows(&path)
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(names.contains(&"Week 3 coursework".to_string()));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rejected_design_comes_back_byte_for_byte() {
+        let path = tmp_path("rejected_byte_for_byte");
+        seed(
+            &path,
+            vec![
+                unreadable_row("a", "Week 3 coursework", 1),
+                healthy_row("b", "Fine one", 2),
+            ],
+        );
+        let find_a = |rows: Vec<serde_json::Value>| -> serde_json::Value {
+            rows.into_iter()
+                .find(|r| r.get("id").and_then(|v| v.as_str()) == Some("a"))
+                .unwrap()
+        };
+        let before = find_a(raw_rows(&path));
+
+        let topology: Topology = serde_json::from_value(sample_topology()).unwrap();
+        save_design(&path, "Something new", &topology);
+
+        let after = find_a(raw_rows(&path));
+        assert_eq!(before, after);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn readable_half_is_unaffected_by_rejected_rows() {
+        let path = tmp_path("readable_unaffected");
+        seed(
+            &path,
+            vec![
+                unreadable_row("a", "Week 3 coursework", 1),
+                healthy_row("b", "Fine one", 2),
+            ],
+        );
+        let topology: Topology = serde_json::from_value(sample_topology()).unwrap();
+        assert!(save_design(&path, "Second", &topology).ok);
+        let mut names: Vec<String> = load_designs(&path).into_iter().map(|d| d.name).collect();
+        names.sort();
+        assert_eq!(names, vec!["Fine one".to_string(), "Second".to_string()]);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn unreadable_rows_do_not_grow_without_limit() {
+        let path = tmp_path("unreadable_capped");
+        let rows: Vec<serde_json::Value> = (0..MAX_SAVED + 15)
+            .map(|i| unreadable_row(&format!("u{i}"), &format!("u{i}"), i as i64))
+            .collect();
+        seed(&path, rows);
+
+        let topology: Topology = serde_json::from_value(sample_topology()).unwrap();
+        assert!(save_design(&path, "mine", &topology).ok);
+
+        // MAX_SAVED unreadable rows (capped at read time) + the one just saved.
+        assert_eq!(raw_rows(&path).len(), MAX_SAVED + 1);
+        cleanup(&path);
     }
 }

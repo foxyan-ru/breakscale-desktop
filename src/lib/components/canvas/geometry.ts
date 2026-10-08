@@ -258,6 +258,28 @@ export function snapTo(v: number, grid: number): number {
 }
 
 /**
+ * Does this drag land on the grid?
+ *
+ * Field-for-field port of the web app's `snapsToGrid` (upstream `1db4ac61`,
+ * PR #37, `src/components/pointerInput.ts`). Two inputs, and they are
+ * different kinds of thing: `snapOn` is the standing `settingsStore.
+ * snapToGrid` preference, which persists and is what the G key and the
+ * Settings switch both write; `ctrlHeld` is a momentary override for the
+ * drag in progress and changes nothing that outlives it. Ctrl only ever
+ * LOOSENS -- holding it while the preference is already off does not turn
+ * snapping back on, which would be a strange thing for a bypass to do.
+ *
+ * Kept here rather than inline in Canvas.svelte so the join between the
+ * preference and the four drag paths that must obey it (node, group-drag,
+ * resize, palette-drop) can be pinned by a unit test without mounting the
+ * canvas -- see `__tests__/snap-to-grid.test.ts`, the same reason web pins
+ * it in `Canvas.pointer.test.ts` without mounting `Canvas.tsx`.
+ */
+export function snapsToGrid(snapOn: boolean, ctrlHeld: boolean): boolean {
+  return snapOn && !ctrlHeld;
+}
+
+/**
  * A generic starting config for a node placed from the palette.
  *
  * The web app's equivalent, `defaultConfig(kind)` in `src/sim/presets.ts`, is
@@ -305,9 +327,38 @@ export function newId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${idSeq.toString(36)}`;
 }
 
-export function makeNode(kind: NodeKind, x: number, y: number): SimNode {
+/**
+ * Mint a node for the canvas.
+ *
+ * `taken` is the set of ids already on the canvas -- the LIVE topology
+ * mirror, read at the call site, not a snapshot captured earlier. Field-
+ * for-field port of upstream `4fd46c47` (PR #65, "never mint a node id that
+ * is already on the canvas"): `newId`'s counter is already time-seeded
+ * (`Date.now().toString(36)`), which makes an ACCIDENTAL collision between
+ * two nodes minted in the same session astronomically unlikely, but that is
+ * a different guarantee from "never reuses an id already on the canvas" --
+ * a design loaded from a file, a share link, or an older session can carry
+ * ids this session's counter knows nothing about, and nothing upstream of
+ * this function previously checked for that. `taken` closes exactly that
+ * gap: when it is supplied (every real call site does, via
+ * `topologyStore.topology.nodes`), a collision retries with a fresh id
+ * instead of silently handing out one two nodes would then share --
+ * selecting either would select both, the Inspector would read "2
+ * components", and an edge or a config change meant for one would land on
+ * both. Optional, and checked only when present, so the many existing
+ * `makeNode('client', 0, 0)` call sites in this repo's own tests (which
+ * have no topology to check against) are unaffected.
+ */
+export function makeNode(
+  kind: NodeKind,
+  x: number,
+  y: number,
+  taken?: ReadonlySet<string>,
+): SimNode {
+  let id = newId('node');
+  while (taken?.has(id)) id = newId('node');
   return {
-    id: newId('node'),
+    id,
     kind,
     label: KIND_NAME[kind],
     x,

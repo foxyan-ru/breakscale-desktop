@@ -35,7 +35,7 @@
  * grouped under "How much it can handle" alongside `capacity`.
  */
 
-import type { NodeConfig, NodeKind, NodeStats, TrafficPattern } from '$lib/domain';
+import type { NodeConfig, NodeKind, NodeStats, SimNode, TrafficPattern } from '$lib/domain';
 import { TRAFFIC_PATTERNS } from '$lib/domain';
 
 /* ------------------------------------------------------------------ *
@@ -99,6 +99,50 @@ export const GATE_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
   'loadshedder',
   'bulkhead',
 ]);
+
+/**
+ * Kinds whose throughput ceiling is `instances x capacity x (1000 /
+ * serviceMs)` -- "spare capacity" (headroom) is only ever a defined concept
+ * for these, and they are therefore the only kinds the Inspector's suggested
+ * fix (`$lib/content/suggestions.ts`) is ever offered for. Transcribed from
+ * the web app's `HAS_THROUGHPUT_CEILING` (`src/components/Inspector.tsx`
+ * lines ~342-361, upstream `781b7258`), which the suggestion feature itself
+ * (`eb163673`, PR #71) is gated on.
+ */
+export const HAS_THROUGHPUT_CEILING: ReadonlySet<NodeKind> = new Set<NodeKind>([
+  'lb',
+  'service',
+  'cache',
+  'db',
+  'worker',
+  'objectstore',
+  'coldstorage',
+  'retryqueue',
+  'transcoder',
+  'edgecompute',
+  'apigateway',
+  'sidecar',
+]);
+
+/**
+ * Spare capacity as a multiple of what is arriving: >= 1 means the node can
+ * keep up, < 1 means it cannot. Null when the kind has no throughput
+ * ceiling, when `serviceMs` is zero (no slot cost defined), or when nothing
+ * has arrived yet -- an idle node is not "out of headroom". Field-for-field
+ * port of the web app's own derivation (`Inspector.tsx` lines 2487-2509,
+ * upstream `781b7258`): `fleet` prefers the engine's live instance count
+ * over the configured one so a mid-scale autoscale is reflected the moment
+ * it lands, the same reasoning `liveReadout`'s `watchedInstances` case
+ * documents below. `suggestionFor` (PR #71, `eb163673`) is gated on exactly
+ * this dropping below 1.
+ */
+export function headroomFor(n: SimNode, stats: NodeStats | null): number | null {
+  if (!HAS_THROUGHPUT_CEILING.has(n.kind) || n.config.serviceMs <= 0) return null;
+  const fleet = Math.max(1, Math.floor(stats?.instances ?? n.config.instances ?? 1));
+  const maxThroughput = fleet * n.config.capacity * (1000 / n.config.serviceMs);
+  const arrivals = stats?.arrivalRate ?? 0;
+  return arrivals > 0 && maxThroughput > 0 ? maxThroughput / arrivals : null;
+}
 
 /** One plain-language sentence per kind, shown under the node name. */
 export const KIND_BLURB: Record<NodeKind, string> = {

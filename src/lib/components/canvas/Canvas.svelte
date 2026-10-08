@@ -72,7 +72,7 @@
      it performs).
      ========================================================================== */
 
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     topologyStore,
     addNode,
@@ -89,7 +89,7 @@
   } from '$lib/state/topology.svelte';
   import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
   import { simulationStore } from '$lib/state/simulation.svelte';
-  import { settingsStore } from '$lib/state/settings.svelte';
+  import { settingsStore, setSetting } from '$lib/state/settings.svelte';
   import { simSetTopology } from '$lib/api/sim';
   import { isAppError } from '$lib/api';
   import { pushError } from '$lib/state/ui.svelte';
@@ -155,6 +155,7 @@
     MARK_RESERVE,
     clamp,
     snapTo,
+    snapsToGrid,
     // zoom-to-fit
     fitViewTo,
     makeNode,
@@ -188,10 +189,15 @@
     RESIZE_DIRS,
     handleAnchor,
     layoutNote,
+    effectiveNoteWidth,
+    naturalNoteWidth,
+    applyTab,
     resizeRect,
   } from './annotation-layout';
-  import type { ResizeDir } from './annotation-layout';
-  import { NOTE_MIN_WIDTH, NOTE_MAX_WIDTH } from '$lib/domain/annotations';
+  import type { ResizeDir, TextEditState } from './annotation-layout';
+  import { NOTE_MIN_WIDTH, NOTE_MAX_WIDTH, NOTE_MAX_CHARS } from '$lib/domain/annotations';
+  import NoteFormatToolbar from './NoteFormatToolbar.svelte';
+  import type { NoteStyleChange } from './NoteFormatToolbar.svelte';
   import {
     dragThresholdFor,
     pressAction,
@@ -481,8 +487,28 @@
     view = { ...view, x: surfaceW / 2 - wx * view.k, y: surfaceH / 2 - wy * view.k };
   }
 
-  function snapIf(v: number): number {
-    return settingsStore.snapToGrid ? snapTo(v, GRID) : Math.round(v);
+  /**
+   * The one place every drag path decides where it puts things -- field-
+   * for-field port of web's `const place = snapsToGrid(snapOn, e.ctrlKey ||
+   * e.metaKey) ? snap : Math.round` (upstream `1db4ac61`, PR #37), computed
+   * once per gesture there and here alike rather than re-derived per call
+   * site, which is what let the preference silently stop being read in the
+   * first place (four copies to keep in step).
+   *
+   * `ctrlHeld` defaults to false for the callers that are NOT one of the
+   * four component/annotation DRAG paths the preference governs (creating a
+   * new note/section, and dragging an existing one -- `createNote`,
+   * `createSection`, `commitAnnotationMove` below): those still snap
+   * unconditionally on the preference alone, exactly as the web app leaves
+   * them ("Note and section placement and the section tool's own frame
+   * still snap unconditionally: those are annotation furniture rather than
+   * the components the label speaks about, and widening to them is a
+   * behaviour change this issue did not ask for" -- same upstream commit).
+   * A node drag, a group drag, a section/note resize and a palette drop all
+   * pass the gesture's LIVE `e.ctrlKey || e.metaKey` explicitly instead.
+   */
+  function snapIf(v: number, ctrlHeld = false): number {
+    return snapsToGrid(settingsStore.snapToGrid, ctrlHeld) ? snapTo(v, GRID) : Math.round(v);
   }
 
   /**
@@ -671,11 +697,17 @@
 
   function commitNoteResize(id: string, x: number, width: number): void {
     commitAnnotations(
-      annotations.map((a) =>
-        a.id === id && isNote(a)
-          ? { ...a, x, width: clamp(width, NOTE_MIN_WIDTH, NOTE_MAX_WIDTH) }
-          : a,
-      ),
+      annotations.map((a) => {
+        if (a.id !== id || !isNote(a)) return a;
+        const next: Note = { ...a, x, width: clamp(width, NOTE_MIN_WIDTH, NOTE_MAX_WIDTH) };
+        // Dragging a side is what PINS a note's width from here on -- "a
+        // side drag pins the width" (`Note.autoResize`'s doc comment,
+        // upstream 3ce685bd's App.tsx `commitNoteResize`). Deleted rather
+        // than set `false`, so a note that was always fixed-width keeps the
+        // field absent.
+        delete next.autoResize;
+        return next;
+      }),
     );
   }
 
@@ -684,7 +716,7 @@
       deleteAnnotation(id);
       return;
     }
-    const next = text.slice(0, 2000);
+    const next = text.slice(0, NOTE_MAX_CHARS);
     const target = annotationById.get(id);
     // Closing the editor with the text unchanged must raise NO entry --
     // a phantom commit would clear redo for nothing. App.tsx's
@@ -716,6 +748,57 @@
     );
   }
 
+  /**
+   * S/M/L size, from the format toolbar. Field-for-field port of web's
+   * `handleSetNoteSize` (`App.tsx` ~1382-1391): no-op (and no commit) when
+   * the size is already current, same 'note size' commit label.
+   */
+  function setNoteSize(id: string, size: Note['size']): void {
+    const target = annotationById.get(id);
+    if (!target || !isNote(target) || target.size === size) return;
+    sessionHistory.commit('note size', currentSnapshot());
+    commitAnnotations(annotations.map((a) => (a.id === id && isNote(a) ? { ...a, size } : a)));
+  }
+
+  /**
+   * Font / tone / bold / italic / underline, from the format toolbar. Field-
+   * for-field port of web's `handleSetNoteStyle` (`App.tsx` ~1393-1428): a
+   * `bold`/`italic`/`underline` 'toggle' DELETES the key when it was already
+   * set rather than writing `false` (`Note`'s own fields are "absent rather
+   * than false when off, so a note that has never been styled stores
+   * nothing"); `tone: null` means "follow the text colour" and also deletes
+   * the key, while `tone: <number>` wraps into the palette the same way
+   * `sanitizeAnnotations` does. One 'note style' commit per call, matching
+   * the single entry web raises even though several fields can change in it
+   * (a toolbar click never sets more than one at a time in practice, but the
+   * shape allows it).
+   */
+  function setNoteStyle(id: string, change: NoteStyleChange): void {
+    const target = annotationById.get(id);
+    if (!target || !isNote(target)) return;
+    sessionHistory.commit('note style', currentSnapshot());
+    commitAnnotations(
+      annotations.map((a) => {
+        if (a.id !== id || !isNote(a)) return a;
+        const next: Note = { ...a };
+        if (change.font) next.font = change.font;
+        for (const flag of ['bold', 'italic', 'underline'] as const) {
+          if (change[flag] !== 'toggle') continue;
+          if (a[flag]) delete next[flag];
+          else next[flag] = true;
+        }
+        if (change.tone !== undefined) {
+          if (change.tone === null) delete next.tone;
+          else
+            next.tone =
+              ((Math.floor(change.tone) % SECTION_TONE_COUNT) + SECTION_TONE_COUNT) %
+              SECTION_TONE_COUNT;
+        }
+        return next;
+      }),
+    );
+  }
+
   function openNoteEditor(id: string): void {
     const n = annotationById.get(id);
     noteEditor = { id, draft: n && isNote(n) ? n.text : '' };
@@ -726,6 +809,43 @@
     if (!noteEditor) return;
     commitNoteText(noteEditor.id, noteEditor.draft);
     noteEditor = null;
+  }
+
+  /**
+   * Tab (indent) / Shift+Tab (outdent) inside the note editor, via
+   * `annotation-layout.ts`'s `applyTab` -- ported from the web app but
+   * unwired until now (Canvas.svelte's own "Known limitations" comment).
+   *
+   * Tab must never move focus: a plain textarea tabs to the next focusable
+   * element, which would commit a half-written note and throw focus onto a
+   * toolbar button. Reading/writing `noteEditorEl`'s selection directly
+   * (rather than threading it through `$state`) matches this editor's own
+   * imperative-DOM idiom -- `bind:value` already lets the browser own the
+   * textarea's live value; the caret is the one piece of state Svelte's
+   * reactivity does not model, so it has to be read and restored by hand,
+   * same as `document.execCommand`-free rich editors do everywhere.
+   */
+  function handleNoteEditorTab(e: KeyboardEvent): void {
+    if (e.key !== 'Tab' || !noteEditor) return;
+    e.preventDefault();
+    const el = noteEditorEl;
+    if (!el) return;
+    const state: TextEditState = {
+      value: noteEditor.draft,
+      start: el.selectionStart ?? 0,
+      end: el.selectionEnd ?? 0,
+    };
+    const next = applyTab(state, e.shiftKey);
+    if (next.value === state.value) return;
+    noteEditor.draft = next.value;
+    // The caret has to be set AFTER Svelte writes the new value into the
+    // textarea's DOM property, or the browser clamps it to the OLD (shorter
+    // or longer) string first and the indent appears to move the caret to
+    // the wrong place.
+    tick().then(() => {
+      el.selectionStart = next.start;
+      el.selectionEnd = next.end;
+    });
   }
 
   function openSectionLabelEditor(id: string): void {
@@ -1003,7 +1123,20 @@
         // Same 'resize' label the web gives this branch (Canvas.tsx ~4066).
         sessionHistory.beginGesture('resize', currentSnapshot());
         p.annDir = p.hitDir as ResizeHandleDir;
-        noteResizeOverlay = { id: ann.id, x: ann.x, width: ann.width };
+        // Seed from the EFFECTIVE width, not `ann.width` raw: an
+        // `autoResize` note's stored width is stale decoration (it was never
+        // drawn at that width), so starting the drag there would jump the
+        // handle out from under the cursor on the very first frame.
+        //
+        // Stashed in `p.annOrigin` (section-resize's own field, `h` unused
+        // here) rather than re-read from `note.width` on every move: the
+        // live annotation's `width` field never changes mid-gesture (the
+        // topology commits only on release), so reading it every frame
+        // would be fine for a FIXED-width note, but an `autoResize` note's
+        // raw `width` is still the stale value, not the baseline the drag
+        // actually started from -- it has to be captured once, here.
+        p.annOrigin = { x: ann.x, y: ann.y, w: noteWidth(ann), h: 0 };
+        noteResizeOverlay = { id: ann.id, x: ann.x, width: noteWidth(ann) };
         break;
       }
       default: {
@@ -1028,14 +1161,23 @@
 
   function applyDrag(p: PendingGesture, e: PointerEvent): void {
     const world = toWorld(e.clientX, e.clientY);
+    // Read ONCE per gesture frame and threaded through every branch below
+    // (`snapIf(v, ctrlHeld)`), rather than each branch reading `e.ctrlKey`
+    // itself: that per-branch duplication is exactly what let this
+    // preference go unread for the component's whole life on the web app
+    // (upstream 1db4ac61's own refactor note, "one snap decision per
+    // gesture"). Covers node drag, group drag and section/note resize --
+    // the four paths `docs/PORTING_GAP.md` names, minus palette-drop, which
+    // reads its own drop event's modifiers separately in `onDrop` below.
+    const ctrlHeld = e.ctrlKey || e.metaKey;
     switch (p.mode) {
       case 'pan':
         view = { ...view, x: p.vx + (e.clientX - p.screenX), y: p.vy + (e.clientY - p.screenY) };
         break;
       case 'node': {
         if (!dragOverlay) break;
-        const nx = snapIf(world.x - p.grabDx);
-        const ny = snapIf(world.y - p.grabDy);
+        const nx = snapIf(world.x - p.grabDx, ctrlHeld);
+        const ny = snapIf(world.y - p.grabDy, ctrlHeld);
         dragOverlay = { id: dragOverlay.id, x: nx, y: ny };
         // Every OTHER member of a promoted group translates by this same
         // delta. Both terms go through `snapIf` before the subtraction so
@@ -1043,9 +1185,10 @@
         // are rounded identically -- the selection keeps its exact shape on
         // the grid instead of each member snapping independently.
         if (groupOrigins && groupDelta) {
+          const place = (v: number) => snapIf(v, ctrlHeld);
           groupDelta = {
-            dx: sharedSnappedDelta(world.x - p.grabDx, p.worldX - p.grabDx, snapIf),
-            dy: sharedSnappedDelta(world.y - p.grabDy, p.worldY - p.grabDy, snapIf),
+            dx: sharedSnappedDelta(world.x - p.grabDx, p.worldX - p.grabDx, place),
+            dy: sharedSnappedDelta(world.y - p.grabDy, p.worldY - p.grabDy, place),
           };
         }
         break;
@@ -1078,7 +1221,7 @@
       }
       case 'ann-resize': {
         if (!annResizeOverlay || !p.annOrigin || !p.annDir) break;
-        const place = (v: number) => snapIf(v);
+        const place = (v: number) => snapIf(v, ctrlHeld);
         const rect = resizeRect(
           p.annOrigin,
           p.annDir,
@@ -1092,16 +1235,28 @@
         break;
       }
       case 'note-resize': {
-        if (!noteResizeOverlay || !p.annDir) break;
+        if (!noteResizeOverlay || !p.annDir || !p.annOrigin) break;
         const note = annotationById.get(noteResizeOverlay.id);
         if (!note || !isNote(note)) break;
         const dx = world.x - p.worldX;
+        // Baseline is `p.annOrigin.w` (the EFFECTIVE width captured once at
+        // gesture start), never `note.width` raw -- see the gesture-start
+        // comment above. Using the live field here would jump an
+        // `autoResize` note to its stale stored width on the very first
+        // move event instead of growing smoothly from where the handle was
+        // actually grabbed.
+        const origin = p.annOrigin;
+        // Grid-snapped like every other resize handle (web's shared `place`,
+        // upstream 1db4ac61): this branch had never snapped at all before --
+        // only clamped to the min/max bounds -- which was its own pre-
+        // existing gap in the "four drag paths" this preference governs.
+        const width8 = (v: number) => snapIf(v, ctrlHeld);
         if (p.annDir.includes('e')) {
-          const width = clamp(note.width + dx, NOTE_MIN_WIDTH, NOTE_MAX_WIDTH);
-          noteResizeOverlay = { id: note.id, x: note.x, width };
+          const width = clamp(width8(origin.w + dx), NOTE_MIN_WIDTH, NOTE_MAX_WIDTH);
+          noteResizeOverlay = { id: note.id, x: origin.x, width };
         } else if (p.annDir.includes('w')) {
-          const width = clamp(note.width - dx, NOTE_MIN_WIDTH, NOTE_MAX_WIDTH);
-          noteResizeOverlay = { id: note.id, x: note.x + (note.width - width), width };
+          const width = clamp(width8(origin.w - dx), NOTE_MIN_WIDTH, NOTE_MAX_WIDTH);
+          noteResizeOverlay = { id: note.id, x: origin.x + (origin.w - width), width };
         }
         break;
       }
@@ -1252,8 +1407,12 @@
                 next.add(a.id);
               }
             } else {
-              const h = layoutNote(a.text, a.width, a.size, a.font, a.bold, a.italic, a.scale).height;
-              if (a.x <= x1 && a.x + a.width >= x0 && a.y <= y1 && a.y + h >= y0) {
+              // Effective width, not `a.width` raw: an `autoResize` note's
+              // true on-screen bounds (what a marquee actually has to clip)
+              // are its NATURAL width, which `a.width` does not hold.
+              const w = effectiveNoteWidth(a);
+              const h = layoutNote(a.text, w, a.size, a.font, a.bold, a.italic, a.scale).height;
+              if (a.x <= x1 && a.x + w >= x0 && a.y <= y1 && a.y + h >= y0) {
                 next.add(a.id);
               }
             }
@@ -1433,6 +1592,22 @@
       }
 
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        // G toggles the standing snap-to-grid preference -- upstream
+        // `1db4ac61` (PR #37) puts it "in the same modifier-guarded block as
+        // C, M and I" (the panel toggles), since G is "the one of these you
+        // press while a drag is already in flight", which is the whole
+        // reason it is a key rather than only a Settings switch. Web wires
+        // this in App.tsx alongside its C/M panel toggles; this repo's
+        // equivalent block lives here in Canvas.svelte instead (the file
+        // ownership for this task's Phase 3B pass keeps +page.svelte off
+        // limits except for item 5's node-id fix), which is the one
+        // deliberate placement difference from the web source -- the
+        // preference, the key's behaviour and the Shortcuts row all match.
+        if (e.key === 'g' || e.key === 'G') {
+          e.preventDefault();
+          setSetting('snapToGrid', !settingsStore.snapToGrid);
+          return;
+        }
         if (e.key === 'n' || e.key === 'N') {
           e.preventDefault();
           pendingLinkFrom = null;
@@ -1699,7 +1874,18 @@
     if (!kind) return;
     e.preventDefault();
     const w = toWorld(e.clientX, e.clientY);
-    const node = makeNode(kind, snapIf(w.x - NODE_W / 2), snapIf(w.y - NODE_H / 2));
+    // "A node dragged in from the rail now honours the preference too"
+    // (upstream 1db4ac61): the fourth of the four drag paths
+    // `docs/PORTING_GAP.md` names, reading THIS gesture's own drop-event
+    // modifiers since a palette drop has no pointermove gesture of its own
+    // to thread `ctrlHeld` through.
+    const ctrlHeld = e.ctrlKey || e.metaKey;
+    const node = makeNode(
+      kind,
+      snapIf(w.x - NODE_W / 2, ctrlHeld),
+      snapIf(w.y - NODE_H / 2, ctrlHeld),
+      new Set(topologyStore.topology.nodes.map((n) => n.id)),
+    );
     // Same 'add' entry as the +page palette click (App.tsx :1476); the
     // annotation drops above ride on createNote/createSection's own
     // commits instead.
@@ -1744,7 +1930,11 @@
 
   function noteWidth(n: Note): number {
     if (noteResizeOverlay && noteResizeOverlay.id === n.id) return noteResizeOverlay.width;
-    return n.width;
+    // `autoResize` notes never wrap at their stored `width` -- it is stale
+    // decoration while the flag is on (`Note.autoResize`'s doc comment,
+    // upstream 3ce685bd) -- so every reader of a note's width goes through
+    // `effectiveNoteWidth` rather than `n.width` directly.
+    return effectiveNoteWidth(n);
   }
 
   /* ------------------------------------------------------------------ *
@@ -2303,14 +2493,45 @@
     {@const note = annotationById.get(editor.id)}
     {#if note && isNote(note)}
       {@const pos = notePos(note)}
+      <!--
+        "Kept in sync with the live note and viewport on every render"
+        (upstream 3ce685bd's textWysiwyg.ts) without textWysiwyg.ts's own
+        imperative DOM management: that rewrite existed to stop a CONTROLLED
+        React textarea from fighting the browser over caret position on
+        every keystroke. Svelte's `bind:value` is not a controlled
+        component -- it writes the DOM property only when `editor.draft`
+        changes from OUTSIDE this textarea's own input -- so the bug the
+        rewrite was for does not reproduce here, and this editor can stay
+        the same declarative floating-overlay idiom every other inline
+        editor on this canvas already uses (`sectionLabelEditor`,
+        `nodeRenameEditor` below).
+
+        width/height/font-size/line-height are recomputed from the LIVE
+        draft on every keystroke, not from the committed `note.text`: an
+        `autoResize` note has to grow (or shrink) while the student is still
+        typing, not only after the editor closes, which is the whole point
+        of the feature ("autoResize notes... auto-resize as text grows").
+      -->
+      {@const liveWidth = note.autoResize
+        ? naturalNoteWidth(editor.draft, note.size, note.font, note.bold, note.italic, note.scale)
+        : noteWidth(note)}
+      {@const liveLayout = layoutNote(editor.draft, liveWidth, note.size, note.font, note.bold, note.italic, note.scale)}
       <textarea
         bind:this={noteEditorEl}
         class="cv-note-editor"
+        class:is-bold={note.bold}
+        class:is-italic={note.italic}
+        class:is-underline={note.underline}
+        data-font={note.font ?? 'sans'}
+        data-tone={note.tone ?? undefined}
         data-chrome="note-editor"
-        style="left:{view.x + pos.x * view.k}px; top:{view.y + pos.y * view.k}px; width:{noteWidth(note) * view.k}px; font-size:{14 * view.k}px;"
+        style="left:{view.x + pos.x * view.k}px; top:{view.y + pos.y * view.k}px; width:{liveWidth * view.k}px; height:{liveLayout.height * view.k}px; font-size:{liveLayout.font * view.k}px; line-height:{liveLayout.lineH * view.k}px;{note.color ? ` color:${note.color};` : ''}"
+        maxlength={NOTE_MAX_CHARS}
         bind:value={editor.draft}
         onblur={commitNoteEditor}
         onkeydown={(e) => {
+          handleNoteEditorTab(e);
+          if (e.defaultPrevented) return;
           if (e.key === 'Escape') {
             e.preventDefault();
             noteEditor = null;
@@ -2318,8 +2539,34 @@
             e.preventDefault();
             commitNoteEditor();
           }
+          // A plain Enter inserts a newline (the textarea's own default
+          // behaviour) rather than committing -- matching upstream
+          // 3ce685bd's note that "Enter inserts a newline... there is no
+          // cancel, matching every other editor on the canvas" (Escape and
+          // blur still commit via the branches above / `onblur`).
         }}
       ></textarea>
+    {/if}
+  {/if}
+
+  {#if selectedAnnotation}
+    {@const sel = selectedAnnotation}
+    {#if isNote(sel)}
+      <!--
+        The format toolbar, for a single selected (or being-edited) note.
+        Built on the `autoResize`-aware editor above, not the old plain
+        textarea it replaced (docs/PORTING_GAP.md's note that this bar
+        "must be built on top of this, not on the old editor") -- it
+        reads/writes the same `Note` fields `noteWidth`/`layoutNote`
+        already render from, so a style change is visible immediately
+        whether or not the text editor happens to be open over this note.
+      -->
+      <NoteFormatToolbar
+        note={sel}
+        toneCount={SECTION_TONE_COUNT}
+        onSetSize={(size) => setNoteSize(sel.id, size)}
+        onSetStyle={(change) => setNoteStyle(sel.id, change)}
+      />
     {/if}
   {/if}
 
