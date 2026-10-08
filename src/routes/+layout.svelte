@@ -10,10 +10,27 @@
          `shell/shell.css`'s app-shell grid), imported here as side effects
          so every component's scoped styles can rely on the tokens and
          primitives being there.
-       - Starting the theme reaction (`startTheme`) and the simulation event
-         listener (`startListening`), both of which must run from `onMount`
-         only -- `window.matchMedia` and the Tauri event/IPC bridge do not
-         exist during the prerender build step (see `+layout.ts`).
+       - Starting the theme reaction (`startTheme`), from `onMount` only --
+         `window.matchMedia` does not exist during the prerender build step
+         (see `+layout.ts`).
+
+         NOTE: the `sim://snapshot` event subscription (`startListening`)
+         used to start here too, alongside `glossaryList()` below. A
+         shipped build showed the canvas never animating; attaching
+         DevTools to the installed app (WebView2's
+         `--remote-debugging-port`) showed the Rust tick thread running
+         correctly but the frontend never once calling
+         `plugin:event|listen` -- this root layout's `onMount` silently
+         never ran its async continuations in that build, for reasons not
+         yet understood (not a thrown exception -- none fires -- just a
+         mount hook whose promise-returning body never executes, while
+         every sibling/child component's `onMount` fires exactly as
+         written). `startListening()` was moved to `+page.svelte`'s
+         `onMount`, which IS confirmed reliable (every `invoke()` in it
+         shows up over the wire every time). `glossaryList()` below has
+         not been moved and may share the same bug -- flagged, not yet
+         fixed; the symptom would be every tooltip reading "No term
+         matches" and the Glossary panel never populating.
        - Loading the glossary once and handing it to `Tooltip.svelte`'s
          module-level registry (`setGlossary`), so every `use:tooltip={{id}}`
          trigger anywhere in the app starts resolving.
@@ -40,7 +57,6 @@
 
   import { onMount } from 'svelte';
   import { startTheme } from '$lib/state/theme.svelte';
-  import { startListening } from '$lib/state/simulation.svelte';
   import { uiStore, dismissError, pushError } from '$lib/state/ui.svelte';
   import { isAppError } from '$lib/api';
   import { glossaryList } from '$lib/api/glossary';
@@ -75,13 +91,6 @@
   onMount(() => {
     const stopTheme = startTheme();
 
-    let listeningCancelled = false;
-    let stopListening: (() => void) | undefined;
-    void startListening().then((stop) => {
-      if (listeningCancelled) stop();
-      else stopListening = stop;
-    });
-
     void glossaryList()
       .then((entries) => {
         glossaryEntries = entries;
@@ -103,9 +112,7 @@
     setGlossaryNavigate((id) => openGlossary(id));
 
     return () => {
-      listeningCancelled = true;
       stopTheme();
-      stopListening?.();
       setGlossaryNavigate(null);
     };
   });

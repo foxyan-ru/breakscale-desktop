@@ -29,9 +29,11 @@ export const simulationStore = createSimulationStore();
  * Start listening for `sim://snapshot` and `sim://tick-error` events and
  * keep `simulationStore` in sync with them.
  *
- * Call this from the root layout's `onMount` only -- the underlying Tauri
- * event API does not exist during the prerender build step. Call the
- * returned cleanup function from `onDestroy`.
+ * Call this from `+page.svelte`'s `onMount` only -- the underlying Tauri
+ * event API does not exist during the prerender build step, and this
+ * specific mount hook is the one confirmed (the hard way, in a shipped
+ * build) to actually run its async body; see the WHY-comment at its call
+ * site. Call the returned cleanup function from `onDestroy`.
  */
 export async function startListening(): Promise<() => void> {
   const unlistenSnapshot = await onSnapshot((snapshot) => {

@@ -30,7 +30,7 @@
   } from '$lib/state/topology.svelte';
   import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
   import type { HistoryEntry } from '$lib/state/history.svelte';
-  import { simulationStore, setRunning } from '$lib/state/simulation.svelte';
+  import { simulationStore, setRunning, startListening } from '$lib/state/simulation.svelte';
   import { settingsStore } from '$lib/state/settings.svelte';
   import { uiStore, pushError } from '$lib/state/ui.svelte';
   import type { ActiveView } from '$lib/state/ui.svelte';
@@ -689,6 +689,35 @@
     // the same preset, so canvas and engine stay on the same topology.
     simulationStore.running = true;
 
+    // WHY HERE, NOT `+layout.svelte`: `startListening()` (the `sim://
+    // snapshot` / `sim://tick-error` event subscription) lived in the root
+    // layout's own `onMount` until a release build showed the canvas never
+    // animating and every readout stuck at "n/a" -- confirmed by attaching
+    // Chrome DevTools to the installed app via WebView2's
+    // `--remote-debugging-port` and polling `sim_get_snapshot` directly:
+    // the Rust tick thread was running fine (real, changing numbers on
+    // every poll), but `performance.getEntriesByType('resource')` showed
+    // the frontend had NEVER once called `plugin:event|listen` -- not at
+    // launch, not minutes later. Manually invoking the exact same
+    // `listen()` call from the devtools console worked instantly and kept
+    // delivering events at the documented ~10Hz, which rules out the IPC
+    // bridge, the event plugin's capability grant, and the Rust emit side
+    // -- all of them demonstrably fine. What's provably NOT fine is the
+    // root layout's onMount: none of its other async work (`glossaryList`)
+    // ran either, while every `invoke()` from THIS component's own onMount
+    // (`presets_list`, `preset_load`, `sim_new`, ...) fired exactly as
+    // written. Rather than chase why SvelteKit's root `+layout.svelte`
+    // silently drops its onMount's async continuations in this particular
+    // static-adapter-in-a-custom-protocol-webview build, the fix moves the
+    // one subscription the whole app depends on into the mount hook that
+    // is actually, verifiably, reliably running.
+    let listeningCancelled = false;
+    let stopListening: (() => void) | undefined;
+    void startListening().then((stop) => {
+      if (listeningCancelled) stop();
+      else stopListening = stop;
+    });
+
     void (async () => {
       let fetched: Topology | null = null;
       try {
@@ -736,6 +765,8 @@
       ro?.disconnect();
       vv?.removeEventListener('resize', measureBar);
       window.removeEventListener('resize', measureBar);
+      listeningCancelled = true;
+      stopListening?.();
     };
   });
 
