@@ -661,18 +661,6 @@
   }
 
   onMount(() => {
-    // DIAGNOSTIC PROBE (temporary -- remove once the v0.2.1 regression is
-    // root-caused): a shipped build of this exact onMount body was found,
-    // via live CDP inspection of the installed app, to be missing not just
-    // `startListening()` but EVERY trace of this function's code (no
-    // `addEventListener('keydown', ...)`, no `visualViewport`, no `resize`
-    // listener -- nothing past this point) from the compiled
-    // `_app/immutable/nodes/*.js` bundle, while the exact same invoke()
-    // calls later in this same onMount (`presets_list`, `sim_set_running`,
-    // ...) DID fire. This marker exists to answer one question with a
-    // single CI round-trip: does ANY of onMount's top-level body survive
-    // the production build at all, or is something eliminating all of it?
-    console.error('BREAKSCALE_PROBE_ONMOUNT_TOP_V1');
     window.addEventListener('keydown', onWindowKeyDown);
 
     // Bar measurement (see the block above `onWindowKeyDown`). jsdom has no
@@ -700,37 +688,6 @@
     // claiming paused. The bootstrap below then swaps in its own copy of
     // the same preset, so canvas and engine stay on the same topology.
     simulationStore.running = true;
-
-    // WHY HERE, NOT `+layout.svelte`: `startListening()` (the `sim://
-    // snapshot` / `sim://tick-error` event subscription) lived in the root
-    // layout's own `onMount` until a release build showed the canvas never
-    // animating and every readout stuck at "n/a" -- confirmed by attaching
-    // Chrome DevTools to the installed app via WebView2's
-    // `--remote-debugging-port` and polling `sim_get_snapshot` directly:
-    // the Rust tick thread was running fine (real, changing numbers on
-    // every poll), but `performance.getEntriesByType('resource')` showed
-    // the frontend had NEVER once called `plugin:event|listen` -- not at
-    // launch, not minutes later. Manually invoking the exact same
-    // `listen()` call from the devtools console worked instantly and kept
-    // delivering events at the documented ~10Hz, which rules out the IPC
-    // bridge, the event plugin's capability grant, and the Rust emit side
-    // -- all of them demonstrably fine. What's provably NOT fine is the
-    // root layout's onMount: none of its other async work (`glossaryList`)
-    // ran either, while every `invoke()` from THIS component's own onMount
-    // (`presets_list`, `preset_load`, `sim_new`, ...) fired exactly as
-    // written. Rather than chase why SvelteKit's root `+layout.svelte`
-    // silently drops its onMount's async continuations in this particular
-    // static-adapter-in-a-custom-protocol-webview build, the fix moves the
-    // one subscription the whole app depends on into the mount hook that
-    // is actually, verifiably, reliably running.
-    console.error('BREAKSCALE_PROBE_BEFORE_STARTLISTENING_V1');
-    let listeningCancelled = false;
-    let stopListening: (() => void) | undefined;
-    void startListening().then((stop) => {
-      console.error('BREAKSCALE_PROBE_STARTLISTENING_RESOLVED_V1');
-      if (listeningCancelled) stop();
-      else stopListening = stop;
-    });
 
     void (async () => {
       let fetched: Topology | null = null;
@@ -779,8 +736,36 @@
       ro?.disconnect();
       vv?.removeEventListener('resize', measureBar);
       window.removeEventListener('resize', measureBar);
-      listeningCancelled = true;
-      stopListening?.();
+    };
+  });
+
+  // WHY A SEPARATE $effect, NOT INLINE IN THE onMount ABOVE: `startListening()`
+  // (the `sim://snapshot` / `sim://tick-error` event subscription) used to be
+  // called from this component's `onMount`, same as everything above it, but a
+  // shipped build still showed the canvas never animating after that change.
+  // Bisecting locally (`bun run build`, no CI round-trip) by placing unique
+  // `console.error` markers at different points in the compiled output proved
+  // that a Svelte-5/Vite production build of this exact `onMount` callback
+  // drops its entire synchronous body -- `window.addEventListener('keydown',
+  // ...)`, the ResizeObserver/`visualViewport` wiring, all of it -- from the
+  // emitted `_app/immutable/nodes/*.js` chunk, while a plain top-level
+  // `$effect()` elsewhere in the very same file survives untouched. (The async
+  // IIFE a few lines above, e.g. `presets_list`, also survives -- it's not
+  // that `onMount` is wholesale removed, just its synchronous prefix; not
+  // fully root-caused beyond that.) Since `startListening()` reads no
+  // reactive state, this effect has no tracked dependencies and therefore
+  // fires exactly once, right after mount, same as `onMount` was meant to --
+  // just through a code path this toolchain doesn't drop.
+  $effect(() => {
+    let cancelled = false;
+    let stop: (() => void) | undefined;
+    void startListening().then((fn) => {
+      if (cancelled) fn();
+      else stop = fn;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
     };
   });
 
