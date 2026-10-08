@@ -49,6 +49,30 @@ const DEFAULT_COOLDOWN_MS: f64 = 5000.0;
 const DEFAULT_STEP_PCT: f64 = 0.5;
 const DEFAULT_WARMUP_MS: f64 = 0.0;
 
+/// One optional knob, or its fallback.
+///
+/// WHY: `behaviour-control.ts:57-70` (upstream `ea11c5b3`, PR #64). None of
+/// these six knobs is among the nine config numbers the web's `isTopology`
+/// validates, so a shared link, a `.breakscale` file or a restored session
+/// can hand the controller a config value that is `Some(NaN)` or
+/// `Some(infinity)`. A plain `.unwrap_or(DEFAULT)` only replaces an ABSENT
+/// field, so such a value sailed through -- and because Rust's
+/// `f64::max`/`f64::min` quietly ignore a NaN operand (unlike JS's
+/// `Math.max`, which propagates it), the bug here was not a crash but a
+/// silent wrong answer: a NaN `max_capacity` made `max_inst` collapse to
+/// `min_inst` (`NaN.floor().max(min_inst)` returns `min_inst`, not NaN),
+/// freezing the fleet at its floor forever, exactly like the upstream bug
+/// report ("the knob left the fleet at one instance"). Guarding every knob
+/// here, before any arithmetic runs, is what actually restores the
+/// documented fallback instead of relying on each call site's `.max`/`.min`
+/// happening to fail safe.
+fn knob(v: Option<f64>, fallback: f64) -> f64 {
+    match v {
+        Some(x) if x.is_finite() => x,
+        _ => fallback,
+    }
+}
+
 struct AutoscalerState {
     /// Simulated time of the last decision; `-Infinity` means "never
     /// decided".
@@ -211,7 +235,7 @@ impl ComponentBehaviour for AutoscalerBehaviour {
             // ...and starts a fresh observation window, because the new
             // node's smoothed utilisation is not a signal yet.
             st.observe_until_ms =
-                ctx.now() + state.config().cooldown_ms.unwrap_or(DEFAULT_COOLDOWN_MS).max(0.0);
+                ctx.now() + knob(state.config().cooldown_ms, DEFAULT_COOLDOWN_MS).max(0.0);
         }
         if watched.is_empty() {
             return;
@@ -255,7 +279,7 @@ impl ComponentBehaviour for AutoscalerBehaviour {
         }
 
         let cfg = state.config();
-        let cooldown = cfg.cooldown_ms.unwrap_or(DEFAULT_COOLDOWN_MS).max(0.0);
+        let cooldown = knob(cfg.cooldown_ms, DEFAULT_COOLDOWN_MS).max(0.0);
 
         // Hold off until the watched node's utilisation is a real
         // measurement rather than an average still climbing out of its
@@ -289,18 +313,14 @@ impl ComponentBehaviour for AutoscalerBehaviour {
         // fleet size, not the thread count. For every topology written
         // before instances existed the two readings coincide, because
         // those nodes run exactly one instance.
-        let min_inst = cfg
-            .min_capacity
-            .unwrap_or(DEFAULT_MIN_INSTANCES)
+        let min_inst = knob(cfg.min_capacity, DEFAULT_MIN_INSTANCES)
             .floor()
             .max(1.0);
-        let max_inst = cfg
-            .max_capacity
-            .unwrap_or(DEFAULT_MAX_INSTANCES)
+        let max_inst = knob(cfg.max_capacity, DEFAULT_MAX_INSTANCES)
             .floor()
             .max(min_inst);
-        let target = clamp01(cfg.target_util.unwrap_or(DEFAULT_TARGET_UTIL));
-        let step = cfg.scale_step_pct.unwrap_or(DEFAULT_STEP_PCT).max(0.01);
+        let target = clamp01(knob(cfg.target_util, DEFAULT_TARGET_UTIL));
+        let step = knob(cfg.scale_step_pct, DEFAULT_STEP_PCT).max(0.01);
         // An instance count is integral, so a step must move at least one
         // machine: a small percentage of a small fleet would otherwise
         // round to a permanent no-op and the controller would silently do
@@ -363,7 +383,7 @@ impl ComponentBehaviour for AutoscalerBehaviour {
             return;
         }
 
-        let warmup = cfg.warmup_ms.unwrap_or(DEFAULT_WARMUP_MS).max(0.0);
+        let warmup = knob(cfg.warmup_ms, DEFAULT_WARMUP_MS).max(0.0);
         if warmup == 0.0 {
             st.target_instances = want;
             ctx.set_scale(&watched, want);
@@ -393,11 +413,18 @@ impl ComponentBehaviour for AutoscalerBehaviour {
             None => return,
         };
         let scaling = st.warmup_due_ms >= 0.0;
-        let live = if !st.watched_id.is_empty() {
-            ctx.scale_of(&st.watched_id).unwrap_or(0.0)
+        // `scale_of` returns None for a watched kind with no fleet concept
+        // (e.g. a blob store) — distinct from a watched kind legitimately
+        // sitting at 0 instances. Upstream `7e285598` (PR #26) surfaces that
+        // distinction as `watchedUnscalable` so the Inspector can say
+        // "adding servers is not the fix" instead of implying a stuck scale.
+        let watched_scale = if !st.watched_id.is_empty() {
+            ctx.scale_of(&st.watched_id)
         } else {
-            0.0
+            None
         };
+        let live = watched_scale.unwrap_or(0.0);
+        let watched_unscalable = !st.watched_id.is_empty() && watched_scale.is_none();
         // While warming up, report the fleet size being BOOKED rather than
         // the one in force: paired with watched_instances, the gap between
         // the two numbers is the visible form of the lag this component
@@ -411,6 +438,7 @@ impl ComponentBehaviour for AutoscalerBehaviour {
         stats.watched_id = Some(st.watched_id.clone());
         stats.target_instances = Some(wanted);
         stats.watched_instances = Some(live);
+        stats.watched_unscalable = Some(watched_unscalable);
         stats.pending_instances = Some(if scaling { (wanted - live).max(0.0) } else { 0.0 });
         stats.scaling = Some(scaling);
         stats.watched_util = Some(if !st.watched_id.is_empty() {
@@ -418,19 +446,16 @@ impl ComponentBehaviour for AutoscalerBehaviour {
         } else {
             0.0
         });
-        stats.setpoint = Some(clamp01(
-            state.config().target_util.unwrap_or(DEFAULT_TARGET_UTIL),
-        ));
+        stats.setpoint = Some(clamp01(knob(
+            state.config().target_util,
+            DEFAULT_TARGET_UTIL,
+        )));
 
         // Which of the three waits it is in, and how much of it is left.
         // Resolved in the same order on_tick() applies them, so the label
         // never claims the controller is free to act when the next tick
         // will find it blocked.
-        let cooldown = state
-            .config()
-            .cooldown_ms
-            .unwrap_or(DEFAULT_COOLDOWN_MS)
-            .max(0.0);
+        let cooldown = knob(state.config().cooldown_ms, DEFAULT_COOLDOWN_MS).max(0.0);
         if scaling {
             stats.scale_phase = Some(ScalePhase::Warming);
             stats.phase_remaining_ms = Some((st.warmup_due_ms - ctx.now()).max(0.0));
@@ -842,3 +867,221 @@ pub static BEHAVIOURS: &[(NodeKind, &'static dyn ComponentBehaviour)] = &[
     (NodeKind::Autoscaler, &AUTOSCALER),
     (NodeKind::Region, &REGION),
 ];
+
+#[cfg(test)]
+mod tests {
+    use crate::sim::engine::Engine;
+    use crate::sim::presets::default_config;
+    use crate::sim::types::{NodeConfig, NodeKind, NodeStats, SimEdge, SimNode, Topology};
+
+    fn node(id: &str, kind: NodeKind, config: NodeConfig) -> SimNode {
+        SimNode { id: id.to_string(), kind, label: id.to_string(), x: 0.0, y: 0.0, config }
+    }
+
+    /// A client -> service pair with an autoscaler watching the service
+    /// through a control edge, patched with whatever knob the test wants to
+    /// try breaking. Mirrors `behaviour-control.autoscaler.test.ts`
+    /// (upstream `ea11c5b3`, PR #64): capacity 2, 40ms service time, 400rps
+    /// offered -- a load the lone starting instance cannot keep up with, so
+    /// the controller MUST add instances for the design to drain.
+    fn topology(patch: impl FnOnce(&mut NodeConfig)) -> Topology {
+        let client_cfg = NodeConfig { rps: 400.0, ..default_config(NodeKind::Client) };
+        let svc_cfg = NodeConfig {
+            capacity: 2.0,
+            service_ms: 40.0,
+            instances: Some(1.0),
+            ..default_config(NodeKind::Service)
+        };
+        let mut auto_cfg = default_config(NodeKind::Autoscaler);
+        patch(&mut auto_cfg);
+
+        Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, client_cfg),
+                node("svc", NodeKind::Service, svc_cfg),
+                node("auto", NodeKind::Autoscaler, auto_cfg),
+            ],
+            edges: vec![
+                SimEdge {
+                    id: "e1".into(),
+                    from: "client".into(),
+                    to: "svc".into(),
+                    weight: 1.0,
+                    control: None,
+                    latency_ms: None,
+                    bandwidth_rps: None,
+                    loss_rate: None,
+                },
+                SimEdge {
+                    id: "e2".into(),
+                    from: "auto".into(),
+                    to: "svc".into(),
+                    weight: 1.0,
+                    control: Some(true),
+                    latency_ms: None,
+                    bandwidth_rps: None,
+                    loss_rate: None,
+                },
+            ],
+            annotations: None,
+        }
+    }
+
+    fn run(patch: impl FnOnce(&mut NodeConfig)) -> (NodeStats, NodeStats) {
+        let mut engine = Engine::new(topology(patch), 7);
+        // Thirty simulated seconds at 60fps: several cooldowns, so the
+        // controller has had every chance to act -- same budget as the web
+        // test this ports.
+        for _ in 0..1800 {
+            engine.advance(1000.0 / 60.0);
+        }
+        let mut snap = engine.snapshot();
+        (
+            snap.nodes.remove("auto").expect("auto node"),
+            snap.nodes.remove("svc").expect("svc node"),
+        )
+    }
+
+    /// WHY: `behaviour-control.ts:57-70` (upstream `ea11c5b3`, PR #64).
+    /// Before the `knob()` guard, a NaN `max_capacity` collapsed `max_inst`
+    /// to `min_inst` (see the WHY-comment on `knob` above): the fleet froze
+    /// at its floor instead of scaling, exactly the upstream bug report ("a
+    /// knob left the fleet at one instance"). The fix is that the
+    /// controller keeps scaling -- and keeps publishing finite stats -- no
+    /// matter which of its six knobs a shared link or restored session
+    /// hands it as NaN.
+    #[test]
+    fn autoscaler_still_scales_when_a_knob_is_nan() {
+        let (_, baseline_svc) = run(|_| {});
+        assert!(
+            baseline_svc.instances.unwrap_or(0.0) > 5.0,
+            "baseline design should need more than one instance"
+        );
+        assert!(
+            baseline_svc.total_completed > 5000.0,
+            "baseline design should complete substantial work in 30s"
+        );
+
+        let knobs: [(&str, fn(&mut NodeConfig)); 6] = [
+            ("target_util", |c| c.target_util = Some(f64::NAN)),
+            ("min_capacity", |c| c.min_capacity = Some(f64::NAN)),
+            ("max_capacity", |c| c.max_capacity = Some(f64::NAN)),
+            ("cooldown_ms", |c| c.cooldown_ms = Some(f64::NAN)),
+            ("scale_step_pct", |c| c.scale_step_pct = Some(f64::NAN)),
+            ("warmup_ms", |c| c.warmup_ms = Some(f64::NAN)),
+        ];
+        for (name, apply) in knobs {
+            let (auto, svc) = run(apply);
+            assert!(
+                svc.instances.unwrap_or(0.0) > 5.0,
+                "{name} = NaN should not stop the fleet from scaling (got {:?})",
+                svc.instances
+            );
+            assert!(
+                svc.total_completed > 4000.0,
+                "{name} = NaN should not stall throughput (got {})",
+                svc.total_completed
+            );
+            assert!(
+                !auto.setpoint.unwrap_or(f64::NAN).is_nan(),
+                "{name} = NaN must not make the published setpoint NaN"
+            );
+            assert!(
+                !auto.target_instances.unwrap_or(f64::NAN).is_nan(),
+                "{name} = NaN must not make the published target_instances NaN"
+            );
+        }
+    }
+
+    /// WHY: `behaviour-control.ts:57-70` (upstream `ea11c5b3`, PR #64).
+    /// `DEFAULT_TARGET_UTIL`/`DEFAULT_MIN_INSTANCES`/`DEFAULT_STEP_PCT`
+    /// happen to equal the preset's own configured `target_util`/
+    /// `min_capacity`/`scale_step_pct`, so a NaN in exactly one of these
+    /// three is indistinguishable from the value it replaced -- the
+    /// sharpest available statement that the guard changed nothing real
+    /// for a design the Inspector could actually produce.
+    #[test]
+    fn nan_identical_to_baseline_when_fallback_matches_configured_value() {
+        let (_, baseline) = run(|_| {});
+
+        let knobs: [(&str, fn(&mut NodeConfig)); 3] = [
+            ("target_util", |c| c.target_util = Some(f64::NAN)),
+            ("min_capacity", |c| c.min_capacity = Some(f64::NAN)),
+            ("scale_step_pct", |c| c.scale_step_pct = Some(f64::NAN)),
+        ];
+        for (name, apply) in knobs {
+            let (_, svc) = run(apply);
+            assert_eq!(
+                svc.instances, baseline.instances,
+                "{name} = NaN should match baseline instances exactly"
+            );
+            assert_eq!(
+                svc.total_completed, baseline.total_completed,
+                "{name} = NaN should match baseline throughput exactly"
+            );
+        }
+    }
+
+    /// WHY: `behaviour-control.ts` `decorateStats` (upstream `7e285598`,
+    /// PR #26). An autoscaler pointed at an `ObjectStore` -- a kind with no
+    /// `scale_field` at all, unlike a `Service`/`Autoscaler` target sitting
+    /// at a legitimate 0 instances -- must say so distinctly: `scale_of`
+    /// returns `None` rather than `Some(0.0)`, and that `None` is what
+    /// `watched_unscalable` surfaces to the Inspector ("adding servers is
+    /// not the fix").
+    #[test]
+    fn watching_a_fleetless_kind_is_reported_as_unscalable() {
+        let client_cfg = NodeConfig { rps: 10.0, ..default_config(NodeKind::Client) };
+        let store_cfg = default_config(NodeKind::ObjectStore);
+        let auto_cfg = default_config(NodeKind::Autoscaler);
+
+        let topo = Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, client_cfg),
+                node("store", NodeKind::ObjectStore, store_cfg),
+                node("auto", NodeKind::Autoscaler, auto_cfg),
+            ],
+            edges: vec![
+                SimEdge {
+                    id: "e1".into(),
+                    from: "client".into(),
+                    to: "store".into(),
+                    weight: 1.0,
+                    control: None,
+                    latency_ms: None,
+                    bandwidth_rps: None,
+                    loss_rate: None,
+                },
+                SimEdge {
+                    id: "e2".into(),
+                    from: "auto".into(),
+                    to: "store".into(),
+                    weight: 1.0,
+                    control: Some(true),
+                    latency_ms: None,
+                    bandwidth_rps: None,
+                    loss_rate: None,
+                },
+            ],
+            annotations: None,
+        };
+
+        let mut engine = Engine::new(topo, 7);
+        for _ in 0..60 {
+            engine.advance(1000.0 / 60.0);
+        }
+        let mut snap = engine.snapshot();
+        let auto = snap.nodes.remove("auto").expect("auto node");
+
+        assert_eq!(
+            auto.watched_id.as_deref(),
+            Some("store"),
+            "autoscaler should resolve its control edge to the store"
+        );
+        assert_eq!(
+            auto.watched_unscalable,
+            Some(true),
+            "watching a kind with no scale_field must report unscalable"
+        );
+    }
+}

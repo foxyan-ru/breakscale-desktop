@@ -65,10 +65,32 @@ use std::sync::{Arc, Mutex};
 /// Keyspace the engine draws request keys from; mirrored here for sizing.
 const KEYSPACE: usize = 64;
 
-fn clamp_int(v: f64, min: i64) -> i64 {
+/// Fleet ceilings, each the maximum the inspector already offers for the
+/// field, so nothing a design built through the UI is affected by them.
+///
+/// WHY: `behaviour-data.ts:21-28` (upstream `0820b8c0`, PR #60). None of
+/// `shardCount`/`replicaCount`/`shardCapacity` is among the nine config
+/// numbers the web's `isTopology` validates, so a shared link, a
+/// `.breakscale` file or a restored session can hand the engine a count
+/// that sizes the `Vec`s below. `NaN as i64` already saturates to 0 in Rust
+/// (so a non-numeric count merely clamped to `min`, no panic) but
+/// `f64::INFINITY as i64` saturates to `i64::MAX`, and a billion-shard
+/// count is itself already past anything a real allocator should attempt --
+/// both are a hole an upper bound closes.
+const MAX_SHARDS: i64 = 64;
+const MAX_REPLICAS: i64 = 64;
+const MAX_SHARD_CAPACITY: i64 = 512;
+
+/// A count from config: floored, held at `min`, capped at `max`.
+fn clamp_int(v: f64, min: i64, max: i64) -> i64 {
+    if !v.is_finite() {
+        return min;
+    }
     let n = v.floor() as i64;
     if n < min {
         min
+    } else if n > max {
+        max
     } else {
         n
     }
@@ -157,12 +179,13 @@ fn replica_ext(ext: &Ext) -> Arc<Mutex<ReplicaExt>> {
 
 /// Total read slots: every replica serves reads in parallel.
 fn read_capacity(state: &dyn NodeStateLike) -> i64 {
-    clamp_int(state.config().capacity, 1) * clamp_int(state.config().replica_count, 1)
+    clamp_int(state.config().capacity, 1, i64::MAX)
+        * clamp_int(state.config().replica_count, 1, MAX_REPLICAS)
 }
 
 /// Write slots: the primary alone, which is why writes do not scale.
 fn write_capacity(state: &dyn NodeStateLike) -> i64 {
-    clamp_int(state.config().capacity, 1)
+    clamp_int(state.config().capacity, 1, i64::MAX)
 }
 
 pub struct ReplicaBehaviour;
@@ -268,7 +291,7 @@ impl ComponentBehaviour for ReplicaBehaviour {
     fn report_instances(&self, ctx: &mut dyn BehaviourCtx, state: &dyn NodeStateLike, ext: &mut Ext) {
         let handle = replica_ext(ext);
         let e = handle.lock().unwrap();
-        let replicas = clamp_int(state.config().replica_count, 1) as usize;
+        let replicas = clamp_int(state.config().replica_count, 1, MAX_REPLICAS) as usize;
         let mut out = vec![0.0f64; replicas + 1];
 
         let write_cap = write_capacity(state);
@@ -490,7 +513,7 @@ fn make_shard_ext(count: usize) -> ShardExt {
 /// onto the shard their key now maps to, rather than being silently
 /// dropped.
 fn ensure_sized(state: &dyn NodeStateLike, e: &mut ShardExt) {
-    let want = clamp_int(state.config().shard_count, 1) as usize;
+    let want = clamp_int(state.config().shard_count, 1, MAX_SHARDS) as usize;
     if e.sized == want {
         return;
     }
@@ -573,7 +596,7 @@ impl ComponentBehaviour for ShardBehaviour {
 
     fn init_state(&self, state: &dyn NodeStateLike) -> Ext {
         Some(Box::new(Arc::new(Mutex::new(make_shard_ext(
-            clamp_int(state.config().shard_count, 1) as usize,
+            clamp_int(state.config().shard_count, 1, MAX_SHARDS) as usize,
         )))))
     }
 
@@ -605,7 +628,7 @@ impl ComponentBehaviour for ShardBehaviour {
             e.sized
         };
         let idx = shard_index_for(ctx, state, req, count);
-        let capacity = clamp_int(state.config().shard_capacity, 1);
+        let capacity = clamp_int(state.config().shard_capacity, 1, MAX_SHARD_CAPACITY);
 
         let mut e = handle.lock().unwrap();
         if e.busy[idx] < capacity {
@@ -638,7 +661,7 @@ impl ComponentBehaviour for ShardBehaviour {
         if dt <= 0.0 {
             return;
         }
-        let capacity = clamp_int(state.config().shard_capacity, 1);
+        let capacity = clamp_int(state.config().shard_capacity, 1, MAX_SHARD_CAPACITY);
         let alpha = 1.0 - (-dt / 500.0).exp();
         let mut busy_total = 0i64;
         for i in 0..e.sized {
@@ -740,7 +763,7 @@ fn on_shard_drained(
         }
     }
 
-    let capacity = clamp_int(state.config().shard_capacity, 1);
+    let capacity = clamp_int(state.config().shard_capacity, 1, MAX_SHARD_CAPACITY);
     loop {
         let popped = {
             let mut e = handle.lock().unwrap();
@@ -790,3 +813,99 @@ pub static BEHAVIOURS: &[(NodeKind, &'static dyn ComponentBehaviour)] = &[
     (NodeKind::Replica, &REPLICA),
     (NodeKind::Shard, &SHARD),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_int;
+    use crate::sim::engine::Engine;
+    use crate::sim::presets::default_config;
+    use crate::sim::types::{NodeConfig, NodeKind, NodeStats, SimEdge, SimNode, Topology};
+
+    /// WHY: `behaviour-data.ts:21-34` (upstream `0820b8c0`, PR #60). Pure
+    /// unit coverage of the helper itself: non-finite falls to `min`, and a
+    /// value above `max` is held there rather than passed through.
+    #[test]
+    fn clamp_int_guards_non_finite_and_caps_the_maximum() {
+        assert_eq!(clamp_int(f64::NAN, 1, 64), 1);
+        assert_eq!(clamp_int(f64::INFINITY, 1, 64), 64);
+        assert_eq!(clamp_int(f64::NEG_INFINITY, 1, 64), 1);
+        assert_eq!(clamp_int(1e9, 1, 64), 64);
+        assert_eq!(clamp_int(8.9, 1, 64), 8);
+        assert_eq!(clamp_int(0.0, 1, 64), 1);
+    }
+
+    fn node(id: &str, kind: NodeKind, config: NodeConfig) -> SimNode {
+        SimNode { id: id.to_string(), kind, label: id.to_string(), x: 0.0, y: 0.0, config }
+    }
+
+    /// A client feeding one `kind` node, patched with whatever field the
+    /// test wants to try breaking. Mirrors
+    /// `behaviour-data.bounds.test.ts` (upstream `0820b8c0`, PR #60).
+    fn topology(kind: NodeKind, patch: impl FnOnce(&mut NodeConfig)) -> Topology {
+        let client_cfg = NodeConfig { rps: 60.0, ..default_config(NodeKind::Client) };
+        let mut target_cfg = default_config(kind);
+        patch(&mut target_cfg);
+        Topology {
+            nodes: vec![node("client", NodeKind::Client, client_cfg), node("target", kind, target_cfg)],
+            edges: vec![SimEdge {
+                id: "e1".into(),
+                from: "client".into(),
+                to: "target".into(),
+                weight: 1.0,
+                control: None,
+                latency_ms: None,
+                bandwidth_rps: None,
+                loss_rate: None,
+            }],
+            annotations: None,
+        }
+    }
+
+    fn stats_for(kind: NodeKind, patch: impl FnOnce(&mut NodeConfig)) -> NodeStats {
+        let mut engine = Engine::new(topology(kind, patch), 7);
+        for _ in 0..60 {
+            engine.advance(1000.0 / 60.0);
+        }
+        engine.snapshot().nodes.remove("target").expect("target node")
+    }
+
+    /// WHY: `behaviour-data.ts:21-34` (upstream `0820b8c0`, PR #60). One
+    /// `Vec` per shard is sized from `shard_count`; before the fix a huge or
+    /// non-finite count sized them unbounded (or, for `NaN`, merely
+    /// happened not to panic in Rust -- see the WHY-comment on
+    /// `clamp_int`). The engine must run to completion either way and must
+    /// never publish a NaN utilisation.
+    #[test]
+    fn shard_count_is_bounded_for_huge_or_non_finite_values() {
+        for shard_count in [f64::NAN, f64::INFINITY, 1e9] {
+            let stats = stats_for(NodeKind::Shard, |c| c.shard_count = shard_count);
+            assert!(
+                stats.shard_utilization.len() <= 64,
+                "shard_count={shard_count} produced {} shards",
+                stats.shard_utilization.len()
+            );
+            assert!(!stats.utilization.is_nan(), "shard_count={shard_count} produced a NaN utilization");
+            for u in &stats.shard_utilization {
+                assert!(!u.is_nan(), "shard_count={shard_count} produced a NaN per-shard utilization");
+            }
+        }
+    }
+
+    /// WHY: same upstream fix, for the replica set's read pool.
+    #[test]
+    fn replica_count_is_bounded_for_huge_or_non_finite_values() {
+        for replica_count in [f64::NAN, f64::INFINITY, 1e9] {
+            let stats = stats_for(NodeKind::Replica, |c| c.replica_count = replica_count);
+            let units = stats.per_instance.as_ref().map(|v| v.len()).unwrap_or(0);
+            assert!(units <= 65, "replica_count={replica_count} produced {units} units");
+        }
+    }
+
+    /// The ceilings are the Inspector's own maxima, so nothing a reader can
+    /// build through the UI moves: eight shards are still eight shards.
+    #[test]
+    fn a_shard_count_the_inspector_can_set_is_unaffected() {
+        let stats = stats_for(NodeKind::Shard, |c| c.shard_count = 8.0);
+        assert_eq!(stats.shard_utilization.len(), 8);
+    }
+}

@@ -59,14 +59,34 @@ use crate::sim::engine_types::{BehaviourCtx, NodeStateLike, ReqLike};
 use crate::sim::types::{BreakerState, EdgeState, FailureReason, NodeKind, NodeStats, SimEdge};
 use std::sync::{Arc, Mutex};
 
-/// `clampInt(v, min, fallback)` from the TS source: floors `v`, falls back
-/// when absent or NaN, and floors the result to `min`.
-fn clamp_int(v: Option<f64>, min: i64, fallback: i64) -> i64 {
+/// Partitions a broker will keep, capped at the inspector's own maximum.
+///
+/// WHY: `behaviour-messaging.ts` (upstream `91e06bf8`, PR #61). One ring
+/// buffer is allocated per partition in `ensure_broker` below, and
+/// `partitions` is not one of the nine config numbers the web's
+/// `isTopology` validates -- a shared link, a `.breakscale` file or a
+/// restored session can hand the engine a partition count the Inspector
+/// could never produce. Unbounded, that allocation does not fail on an
+/// infinite or billion-count value, it simply never finishes (or tries to,
+/// since `f64::INFINITY as i64` saturates to `i64::MAX` in Rust).
+const MAX_PARTITIONS: i64 = 64;
+
+/// `clampInt(v, min, fallback, max)` from the TS source: floors `v`, falls
+/// back when absent, NaN *or infinite*, and holds the result inside
+/// `[min, max]`.
+///
+/// WHY `x.is_finite()` and not `!x.is_nan()`: the pre-#61 guard only caught
+/// NaN. `Infinity` is a number and is not NaN, so it survived the old
+/// check, survived `.floor()`, and reached the loops below that build one
+/// structure per partition -- which do not fail on it, they never finish.
+fn clamp_int(v: Option<f64>, min: i64, fallback: i64, max: i64) -> i64 {
     match v {
-        Some(x) if !x.is_nan() => {
+        Some(x) if x.is_finite() => {
             let n = x.floor() as i64;
             if n < min {
                 min
+            } else if n > max {
+                max
             } else {
                 n
             }
@@ -127,7 +147,7 @@ struct BrokerExt {
 }
 
 fn broker_partitions(state: &dyn NodeStateLike) -> i64 {
-    clamp_int(state.config().partitions, 1, 4)
+    clamp_int(state.config().partitions, 1, 4, MAX_PARTITIONS)
 }
 
 fn broker_retention(state: &dyn NodeStateLike, partitions: i64) -> i64 {
@@ -987,7 +1007,7 @@ struct SidecarExt {
 }
 
 fn sidecar_outlier_after(state: &dyn NodeStateLike) -> i64 {
-    clamp_int(state.config().outlier_after, 1, 5)
+    clamp_int(state.config().outlier_after, 1, 5, i64::MAX)
 }
 
 fn sidecar_open_ms(state: &dyn NodeStateLike) -> f64 {
@@ -1203,7 +1223,7 @@ fn lambda_ext(ext: &Ext) -> Arc<Mutex<LambdaExt>> {
 }
 
 fn lambda_limit(state: &dyn NodeStateLike) -> i64 {
-    clamp_int(state.config().max_concurrency, 1, 40)
+    clamp_int(state.config().max_concurrency, 1, 40, i64::MAX)
 }
 
 /// Reclaim warm instances whose keep-alive ended, as of `now`.
@@ -1409,7 +1429,7 @@ fn cron_interval(state: &dyn NodeStateLike) -> f64 {
 /// Requests per edge per firing, bounded so a slider cannot wedge the
 /// heap.
 fn cron_batch(state: &dyn NodeStateLike) -> i64 {
-    clamp_int(state.config().batch_size, 1, 50).min(2000)
+    clamp_int(state.config().batch_size, 1, 50, i64::MAX).min(2000)
 }
 
 pub struct CronBehaviour;
@@ -1533,3 +1553,112 @@ pub static BEHAVIOURS: &[(NodeKind, &'static dyn ComponentBehaviour)] = &[
     (NodeKind::Lambda, &LAMBDA),
     (NodeKind::Cron, &CRON),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_int;
+    use crate::sim::engine::Engine;
+    use crate::sim::presets::default_config;
+    use crate::sim::types::{NodeConfig, NodeKind, NodeStats, SimEdge, SimNode, Topology};
+
+    /// WHY: `behaviour-messaging.ts` (upstream `91e06bf8`, PR #61). Pure
+    /// unit coverage of the helper itself: `Infinity` is a number and is
+    /// not NaN, so only an explicit `is_finite()` guard (not `!is_nan()`)
+    /// catches it, and a value above `max` must be held there.
+    #[test]
+    fn clamp_int_guards_non_finite_and_caps_the_maximum() {
+        assert_eq!(clamp_int(Some(f64::NAN), 1, 4, 64), 4);
+        assert_eq!(clamp_int(Some(f64::INFINITY), 1, 4, 64), 64);
+        assert_eq!(clamp_int(Some(1e9), 1, 4, 64), 64);
+        assert_eq!(clamp_int(None, 1, 4, 64), 4);
+        assert_eq!(clamp_int(Some(8.9), 1, 4, 64), 8);
+    }
+
+    fn node(id: &str, kind: NodeKind, config: NodeConfig) -> SimNode {
+        SimNode { id: id.to_string(), kind, label: id.to_string(), x: 0.0, y: 0.0, config }
+    }
+
+    /// A client -> log -> worker chain, with `partitions` set to whatever
+    /// the test wants to try breaking. Mirrors
+    /// `behaviour-messaging.bounds.test.ts` (upstream `91e06bf8`, PR #61).
+    fn topology(kind: NodeKind, partitions: Option<f64>) -> Topology {
+        let client_cfg = NodeConfig { rps: 60.0, ..default_config(NodeKind::Client) };
+        let mut log_cfg = default_config(kind);
+        log_cfg.partitions = partitions;
+        let worker_cfg = default_config(NodeKind::Worker);
+        Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, client_cfg),
+                node("log", kind, log_cfg),
+                node("worker", NodeKind::Worker, worker_cfg),
+            ],
+            edges: vec![
+                SimEdge {
+                    id: "e1".into(),
+                    from: "client".into(),
+                    to: "log".into(),
+                    weight: 1.0,
+                    control: None,
+                    latency_ms: None,
+                    bandwidth_rps: None,
+                    loss_rate: None,
+                },
+                SimEdge {
+                    id: "e2".into(),
+                    from: "log".into(),
+                    to: "worker".into(),
+                    weight: 1.0,
+                    control: None,
+                    latency_ms: None,
+                    bandwidth_rps: None,
+                    loss_rate: None,
+                },
+            ],
+            annotations: None,
+        }
+    }
+
+    fn stats_for(kind: NodeKind, partitions: Option<f64>) -> NodeStats {
+        let mut engine = Engine::new(topology(kind, partitions), 7);
+        for _ in 0..60 {
+            engine.advance(1000.0 / 60.0);
+        }
+        engine.snapshot().nodes.remove("log").expect("log node")
+    }
+
+    /// WHY: `behaviour-messaging.ts` (upstream `91e06bf8`, PR #61). One ring
+    /// buffer is allocated per partition in `ensure_broker`; before this fix
+    /// `clamp_int` floored and floored a partition count at `min` but never
+    /// capped it, so `Infinity`/a billion-count value sized those `Vec`s
+    /// without bound. The engine must run to completion either way and the
+    /// published per-partition stack must stay within the Inspector's own
+    /// ceiling.
+    #[test]
+    fn broker_partition_count_is_bounded_for_huge_or_non_finite_values() {
+        for partitions in [Some(f64::INFINITY), Some(1e9)] {
+            let stats = stats_for(NodeKind::StreamBroker, partitions);
+            let units = stats.per_instance.as_ref().map(|v| v.len()).unwrap_or(0);
+            assert!(units <= 64, "partitions={partitions:?} produced {units} units");
+        }
+    }
+
+    /// A design with no `partitions` field at all (an old save, or a
+    /// topology built before the field existed) still gets the documented
+    /// four-partition default.
+    #[test]
+    fn broker_falls_back_to_four_partitions_when_absent() {
+        let stats = stats_for(NodeKind::StreamBroker, None);
+        let units = stats.per_instance.as_ref().map(|v| v.len()).unwrap_or(0);
+        assert_eq!(units, 4);
+    }
+
+    /// The ceiling is the Inspector's own maximum, so nothing a reader can
+    /// build through the UI moves: eight partitions are still eight
+    /// partitions.
+    #[test]
+    fn a_partition_count_the_inspector_can_set_is_unaffected() {
+        let stats = stats_for(NodeKind::StreamBroker, Some(8.0));
+        let units = stats.per_instance.as_ref().map(|v| v.len()).unwrap_or(0);
+        assert_eq!(units, 8);
+    }
+}

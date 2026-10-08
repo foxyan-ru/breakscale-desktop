@@ -515,10 +515,10 @@
     "id": "bulkhead",
     "term": "Bulkhead",
     "short": "Caps calls in flight to the dependency behind it",
-    "why": "When that dependency slows down, the pool fills within one round trip and the excess fails fast here instead of queueing behind a sick service. Watching the pool fill is your earliest warning of a slow dependency.",
+    "why": "When that dependency slows down, the pool fills within one round trip and the excess fails fast here instead of queueing behind a sick service. Watching the pool fill is your earliest warning of a slow dependency. Switch it to wait mode and a caller that cannot get a slot right away holds its place in a bounded acquire queue instead of failing immediately -- it still fails if no slot opens before its own acquire timeout elapses, now counted separately so you can see wait-then-timeout from fail-fast. A queue that stays full under sustained overload is retry amplification waiting to happen: every acquire timeout is a caller about to retry a dependency that is already behind.",
     "category": "component",
     "see": ["breaker", "timeout"],
-    "aliases": ["concurrency pool"]
+    "aliases": ["concurrency pool", "acquire queue"]
   },
   {
     "id": "retryqueue",
@@ -861,7 +861,7 @@
     "id": "bulkhead-full",
     "term": "Bulkhead full",
     "short": "Refused because the concurrency pool was occupied",
-    "why": "Every allowed call to the dependency was already in flight, usually because that dependency slowed down. This failure is protection: the alternative is queueing behind a sick service.",
+    "why": "Every allowed call to the dependency was already in flight, usually because that dependency slowed down. This failure is protection: the alternative is queueing behind a sick service. In the bulkhead's wait mode this only fires once the acquire queue itself is also full; a caller that found room in the queue instead waits, and fails as an acquire timeout rather than this if no slot opens in time.",
     "category": "failure",
     "see": ["bulkhead"],
     "aliases": ["bulkhead-full", "pool full"]

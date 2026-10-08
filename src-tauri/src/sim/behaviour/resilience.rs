@@ -32,17 +32,38 @@ use crate::sim::behaviour::{
     clamp01, AdmitAction, ComponentBehaviour, CompleteAction, Ext, InstanceModel, PumpMode,
     RouteMode, ScaleField,
 };
-use crate::sim::engine_types::{BehaviourCtx, NodeStateLike, ReqLike};
-use crate::sim::types::{FailureReason, NodeKind, NodeStats, SimEdge};
+use crate::sim::engine_types::{BehaviourCtx, NodeStateLike, ReqHandle, ReqLike};
+use crate::sim::types::{BulkheadMode, FailureReason, NodeKind, NodeStats, SimEdge};
+use std::collections::VecDeque;
 
 /* ================================================================== *
  * bulkhead -- an isolated concurrency pool around one dependency
  * ================================================================== */
 
-/// Bulkhead scratch state: the one number the component is about.
+/// One request waiting to acquire a bulkhead slot, in arrival order. Port
+/// of `BulkheadWaiter` (`behaviour-resilience.ts`, upstream `351327c4`, PR
+/// #77).
+struct BulkheadWaiter {
+    /// Storable identity of the held request, obtained via `ctx.handle_of`
+    /// at the moment it was queued (see `NodeStateLike`/`ReqLike`'s own
+    /// doc comments on why a live view cannot be kept across hook calls).
+    handle: ReqHandle,
+    /// Simulated time this request joined the queue, for the acquire
+    /// latency measured when it is finally admitted.
+    entered_at: f64,
+}
+
+/// Bulkhead scratch state: slots plus an optional acquire queue.
 struct BulkheadExt {
     /// Downstream calls currently outstanding through this pool.
     in_flight: i64,
+    /// Requests waiting to acquire a pool slot, FIFO. Only ever non-empty
+    /// with `bulkheadMode: Wait`. Port of `BulkheadState.waiters` (upstream
+    /// `351327c4`, PR #77).
+    waiters: VecDeque<BulkheadWaiter>,
+    /// The measured wait of the most recently acquired waiter, or `None`
+    /// before the first acquire.
+    last_acquire_latency_ms: Option<f64>,
 }
 
 fn cfg_bulkhead_max(state: &dyn NodeStateLike) -> i64 {
@@ -52,9 +73,54 @@ fn cfg_bulkhead_max(state: &dyn NodeStateLike) -> i64 {
     }
 }
 
+/// Bulkhead only: waiting acquires allowed before a request is shed
+/// immediately as 'bulkhead-full' even with `bulkheadMode: Wait`. Port of
+/// `cfgAcquireQueueMax` (`behaviour-resilience.ts`, upstream `351327c4`, PR
+/// #77): floored to >= 0, defaulting to 100 when unset.
+fn cfg_acquire_queue_max(state: &dyn NodeStateLike) -> i64 {
+    match state.config().acquire_queue_max {
+        Some(v) if v >= 0.0 => v.floor() as i64,
+        _ => 100,
+    }
+}
+
+/// Bulkhead only: longest a waiting request may wait for a pool slot before
+/// it fails as 'acquire-timeout'. Port of `cfgAcquireTimeoutMs` (same
+/// upstream commit): defaults to 1000ms when unset.
+fn cfg_acquire_timeout_ms(state: &dyn NodeStateLike) -> f64 {
+    match state.config().acquire_timeout_ms {
+        Some(v) if v >= 0.0 => v,
+        _ => 1000.0,
+    }
+}
+
+/// Promote the longest-waiting acquire once a slot frees. FIFO: the
+/// request that has waited longest gets the slot first. Port of
+/// `admitWaiter` (`behaviour-resilience.ts`, upstream `351327c4`, PR #77).
+fn admit_waiter(ctx: &mut dyn BehaviourCtx, state: &dyn NodeStateLike, b: &mut BulkheadExt) {
+    let waiter = match b.waiters.pop_front() {
+        Some(w) => w,
+        None => return,
+    };
+    b.in_flight += 1;
+    b.last_acquire_latency_ms = Some(ctx.now() - waiter.entered_at);
+    ctx.count_custom(state, "admitted", 1.0);
+    ctx.resume_admission(state, waiter.handle);
+}
+
 /// A bulkhead: at most `bulkhead_max` calls may be outstanding to the
-/// dependency behind it at once. The excess fails here, immediately, as
-/// 'bulkhead-full'.
+/// dependency behind it at once. The default policy (`bulkheadMode: Reject`,
+/// or the field left unset) fails the excess here, immediately, as
+/// 'bulkhead-full'. Setting `bulkheadMode: Wait` switches to a bounded
+/// acquire queue instead: a caller the pool cannot admit right now waits --
+/// up to `acquireQueueMax` deep -- for a slot to free, or for its own
+/// `acquireTimeoutMs` to elapse, whichever comes first. The former fails as
+/// 'acquire-timeout' rather than 'bulkhead-full', and queue depth beyond
+/// `acquireQueueMax` still fails fast exactly as before. This models real
+/// connection-pool exhaustion (wait, then acquire-timeout, then whatever
+/// retry policy the caller has) instead of only its fail-fast half. Port of
+/// `behaviour-resilience.ts`'s `bulkhead.onAdmit`/`onWake` (upstream
+/// `351327c4`, PR #77).
 ///
 /// The teaching point is Little's law working as a safety property. When
 /// the dependency is healthy, concurrency sits at `rate * latency` and the
@@ -115,7 +181,7 @@ impl ComponentBehaviour for BulkheadBehaviour {
     }
 
     fn init_state(&self, _state: &dyn NodeStateLike) -> Ext {
-        Some(Box::new(BulkheadExt { in_flight: 0 }))
+        Some(Box::new(BulkheadExt { in_flight: 0, waiters: VecDeque::new(), last_acquire_latency_ms: None }))
     }
 
     fn on_admit(
@@ -137,6 +203,23 @@ impl ComponentBehaviour for BulkheadBehaviour {
             .and_then(|e| e.downcast_mut::<BulkheadExt>())
             .expect("bulkhead ext");
         if b.in_flight >= cfg_bulkhead_max(state) {
+            // Bounded acquire queue: with `bulkheadMode: Wait` and room
+            // left in the queue, hold the caller here instead of failing
+            // it immediately -- it is woken by `admit_waiter` (a slot
+            // freed) or `on_wake` (its own acquire timeout elapsed),
+            // whichever comes first. Default mode is `Reject` (`None`
+            // reads as `Reject` too), so a topology saved before this
+            // feature existed keeps today's immediate-rejection behaviour
+            // unchanged. Port of `onAdmit` (`behaviour-resilience.ts`,
+            // upstream `351327c4`, PR #77).
+            if state.config().bulkhead_mode == Some(BulkheadMode::Wait)
+                && (b.waiters.len() as i64) < cfg_acquire_queue_max(state)
+            {
+                let handle = ctx.handle_of(req);
+                b.waiters.push_back(BulkheadWaiter { handle, entered_at: ctx.now() });
+                ctx.wake_after(state, handle, cfg_acquire_timeout_ms(state));
+                return AdmitAction::Handled;
+            }
             ctx.count_custom(state, "bulkheadRejected", 1.0);
             ctx.reject(state, req, FailureReason::BulkheadFull);
             return AdmitAction::Handled;
@@ -181,8 +264,8 @@ impl ComponentBehaviour for BulkheadBehaviour {
 
     fn on_downstream_result(
         &self,
-        _ctx: &mut dyn BehaviourCtx,
-        _state: &dyn NodeStateLike,
+        ctx: &mut dyn BehaviourCtx,
+        state: &dyn NodeStateLike,
         _req: &dyn ReqLike,
         _ok: bool,
         _reason: FailureReason,
@@ -195,6 +278,37 @@ impl ComponentBehaviour for BulkheadBehaviour {
         if b.in_flight > 0 {
             b.in_flight -= 1;
         }
+        // A slot just freed: hand it to the longest-waiting acquire, if
+        // any. Port of the same line in TS's `onDownstreamResult`
+        // (upstream `351327c4`, PR #77).
+        if b.in_flight < cfg_bulkhead_max(state) {
+            admit_waiter(ctx, state, b);
+        }
+    }
+
+    fn on_wake(
+        &self,
+        ctx: &mut dyn BehaviourCtx,
+        state: &dyn NodeStateLike,
+        req: &dyn ReqLike,
+        ext: &mut Ext,
+    ) {
+        let b = ext
+            .as_mut()
+            .and_then(|e| e.downcast_mut::<BulkheadExt>())
+            .expect("bulkhead ext");
+        let handle = ctx.handle_of(req);
+        // Already admitted by `admit_waiter` before this timer fired: the
+        // waiter is gone from the queue, so there is nothing left to time
+        // out. Port of `onWake`'s `isWaiting` guard (`behaviour-
+        // resilience.ts`, upstream `351327c4`, PR #77).
+        let idx = match b.waiters.iter().position(|w| w.handle == handle) {
+            Some(i) => i,
+            None => return,
+        };
+        b.waiters.remove(idx);
+        ctx.count_custom(state, "bulkheadAcquireTimeout", 1.0);
+        ctx.reject(state, req, FailureReason::AcquireTimeout);
     }
 
     fn decorate_stats(
@@ -204,14 +318,17 @@ impl ComponentBehaviour for BulkheadBehaviour {
         stats: &mut NodeStats,
         ext: &mut Ext,
     ) {
-        let in_flight = ext
+        let (in_flight, waiting, last_acquire_latency_ms) = ext
             .as_ref()
             .and_then(|e| e.downcast_ref::<BulkheadExt>())
-            .map(|b| b.in_flight)
-            .unwrap_or(0);
+            .map(|b| (b.in_flight, b.waiters.len() as i64, b.last_acquire_latency_ms))
+            .unwrap_or((0, 0, None));
         stats.bulkhead_in_flight = Some(in_flight as f64);
         stats.bulkhead_limit = Some(cfg_bulkhead_max(state) as f64);
         stats.bulkhead_rejected_rate = Some(ctx.counter_rate(state, "bulkheadRejected"));
+        stats.bulkhead_waiting = Some(waiting as f64);
+        stats.bulkhead_acquire_latency_ms = last_acquire_latency_ms;
+        stats.bulkhead_acquire_timeout_rate = Some(ctx.counter_rate(state, "bulkheadAcquireTimeout"));
         // Show the pool as this node's occupancy so the canvas meter means
         // "how full is the bulkhead" rather than sitting at zero forever.
         stats.in_flight = in_flight as f64;
@@ -359,11 +476,34 @@ impl ComponentBehaviour for RetryQueueBehaviour {
  * transcoder -- a CPU-bound batch job farm
  * ================================================================== */
 
-fn cfg_renditions(state: &dyn NodeStateLike) -> i64 {
-    match state.config().renditions {
-        Some(v) if v >= 1.0 => v.floor() as i64,
+/// Longest ladder the farm will encode -- the inspector's own maximum for
+/// the `renditions` field (`field-schema.ts`: min 1 / max 12).
+///
+/// The cap lives here, not only at the number input, because
+/// `on_service_complete` below runs a loop once per rendition per outgoing
+/// edge per finished job, and `renditions` is not one of the config numbers
+/// the topology loader validates: a shared link, a `.breakscale` file or a
+/// restored session can still carry anything into that loop.
+const MAX_RENDITIONS: i64 = 12;
+
+/// Pure arithmetic behind `cfg_renditions`, factored out so the guard can be
+/// unit-tested without a `NodeStateLike`.
+///
+/// WHY `v.is_finite()` and not just `v >= 1.0`: `Infinity >= 1.0` is true in
+/// IEEE-754 and `.floor()` leaves `Infinity` unchanged, so the pre-#62 guard
+/// let an unbounded rendition count reach the emit loop and never finish.
+/// Port of `behaviour-resilience.ts` `cfgRenditions()` (upstream `dcb6980c`,
+/// PR #62): guard non-finite input first, then hold the floored value at
+/// `MAX_RENDITIONS` instead of letting it through uncapped.
+fn clamp_renditions(v: Option<f64>) -> i64 {
+    match v {
+        Some(x) if x.is_finite() && x >= 1.0 => x.floor().min(MAX_RENDITIONS as f64) as i64,
         _ => 3,
     }
+}
+
+fn cfg_renditions(state: &dyn NodeStateLike) -> i64 {
+    clamp_renditions(state.config().renditions)
 }
 
 /// A transcoder farm: workers whose jobs take SECONDS, and whose output is
@@ -934,3 +1074,281 @@ pub static BEHAVIOURS: &[(NodeKind, &'static dyn ComponentBehaviour)] = &[
     (NodeKind::WriteBehind, &WRITEBEHIND),
     (NodeKind::LoadShedder, &LOADSHEDDER),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_renditions;
+    use crate::sim::engine::Engine;
+    use crate::sim::presets::default_config;
+    use crate::sim::types::{
+        BulkheadMode, FailureReason, FailuresByReason, NodeConfig, NodeKind, NodeStats, SimEdge,
+        SimNode, Topology,
+    };
+
+    /// WHY: `behaviour-resilience.ts` `cfgRenditions()` (upstream
+    /// `dcb6980c`, PR #62). Pure unit coverage of the helper itself:
+    /// non-finite and out-of-range values fall back to the default of 3,
+    /// and a value above `MAX_RENDITIONS` is held at the cap rather than
+    /// passed through uncapped.
+    #[test]
+    fn clamp_renditions_guards_non_finite_and_caps_the_maximum() {
+        assert_eq!(clamp_renditions(Some(f64::NAN)), 3);
+        assert_eq!(clamp_renditions(Some(f64::INFINITY)), 12);
+        assert_eq!(clamp_renditions(Some(f64::NEG_INFINITY)), 3);
+        assert_eq!(clamp_renditions(Some(1e9)), 12);
+        assert_eq!(clamp_renditions(Some(0.0)), 3);
+        assert_eq!(clamp_renditions(None), 3);
+        assert_eq!(clamp_renditions(Some(8.9)), 8);
+    }
+
+    fn node(id: &str, kind: NodeKind, config: NodeConfig) -> SimNode {
+        SimNode { id: id.to_string(), kind, label: id.to_string(), x: 0.0, y: 0.0, config }
+    }
+
+    /// A client feeding a transcoder farm feeding an object store, patched
+    /// with whatever `renditions` value the test wants to try breaking.
+    /// Mirrors `behaviour-resilience.bounds.test.ts` (upstream `dcb6980c`,
+    /// PR #62).
+    fn topology(patch: impl FnOnce(&mut NodeConfig)) -> Topology {
+        let client_cfg = NodeConfig { rps: 30.0, ..default_config(NodeKind::Client) };
+        let mut farm_cfg = default_config(NodeKind::Transcoder);
+        patch(&mut farm_cfg);
+        let store_cfg = default_config(NodeKind::ObjectStore);
+        let edge = |id: &str, from: &str, to: &str| SimEdge {
+            id: id.into(),
+            from: from.into(),
+            to: to.into(),
+            weight: 1.0,
+            control: None,
+            latency_ms: None,
+            bandwidth_rps: None,
+            loss_rate: None,
+        };
+        Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, client_cfg),
+                node("farm", NodeKind::Transcoder, farm_cfg),
+                node("store", NodeKind::ObjectStore, store_cfg),
+            ],
+            edges: vec![edge("e1", "client", "farm"), edge("e2", "farm", "store")],
+            annotations: None,
+        }
+    }
+
+    /// `farm`'s own stats after the engine has had time to finish at least
+    /// one job. Mirrors `stats_for` in `behaviour/data.rs`'s tests.
+    fn farm_stats(patch: impl FnOnce(&mut NodeConfig)) -> NodeStats {
+        let mut engine = Engine::new(topology(patch), 7);
+        for _ in 0..120 {
+            engine.advance(1000.0 / 60.0);
+        }
+        engine.snapshot().nodes.remove("farm").expect("farm node")
+    }
+
+    /// WHY: same upstream fix. Before it, a huge or non-finite `renditions`
+    /// reached the `on_service_complete` emit loop -- one iteration per
+    /// rendition per outgoing edge per finished job -- which never
+    /// terminated. The engine must still run to completion in bounded time
+    /// and must never publish a non-finite output rate.
+    #[test]
+    fn rendition_count_is_bounded_for_huge_or_non_finite_values() {
+        for renditions in [f64::INFINITY, 1e9, f64::NAN] {
+            let stats = farm_stats(|c| c.renditions = Some(renditions));
+            assert!(
+                stats.output_rate.unwrap_or(f64::NAN).is_finite(),
+                "renditions={renditions} produced a non-finite output_rate"
+            );
+        }
+    }
+
+    /// The ceiling is the inspector's own maximum (`field-schema.ts`:
+    /// `renditions` min 1 / max 12), so a ladder a reader can actually
+    /// build through the UI is untouched: a farm configured for 8
+    /// renditions still finishes jobs and reports output.
+    #[test]
+    fn a_rendition_count_the_inspector_can_set_is_unaffected() {
+        assert_eq!(clamp_renditions(Some(8.0)), 8);
+        let stats = farm_stats(|c| c.renditions = Some(8.0));
+        assert!(stats.output_rate.unwrap_or(0.0) > 0.0, "farm configured for 8 renditions produced no output");
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Bulkhead acquire-queue (upstream `351327c4`, PR #77).
+     *
+     * A client feeding a single-slot bulkhead feeding a dependency
+     * service, mirroring `bulkhead.acquire.test.ts`'s shape: the
+     * dependency's `serviceMs` controls how long the pool's one slot
+     * stays held, and so how often a waiter's own acquire timeout beats a
+     * freed slot. The client's OWN `timeoutMs` is set far longer than any
+     * test's run, so the only timeout-shaped failure in play is the
+     * bulkhead's 'acquire-timeout' -- never the client giving up.
+     * ---------------------------------------------------------------- */
+
+    fn bulkhead_topology(
+        client_rps: f64,
+        dependency_service_ms: f64,
+        patch: impl FnOnce(&mut NodeConfig),
+    ) -> Topology {
+        let client_cfg =
+            NodeConfig { rps: client_rps, timeout_ms: 60000.0, ..default_config(NodeKind::Client) };
+        let mut pool_cfg = default_config(NodeKind::Bulkhead);
+        pool_cfg.bulkhead_max = Some(1.0);
+        patch(&mut pool_cfg);
+        let dep_cfg = NodeConfig {
+            capacity: 1.0,
+            service_ms: dependency_service_ms,
+            service_cv: 0.0,
+            queue_limit: 1000.0,
+            ..default_config(NodeKind::Service)
+        };
+        let edge = |id: &str, from: &str, to: &str| SimEdge {
+            id: id.into(),
+            from: from.into(),
+            to: to.into(),
+            weight: 1.0,
+            control: None,
+            latency_ms: None,
+            bandwidth_rps: None,
+            loss_rate: None,
+        };
+        Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, client_cfg),
+                node("pool", NodeKind::Bulkhead, pool_cfg),
+                node("dep", NodeKind::Service, dep_cfg),
+            ],
+            edges: vec![edge("e1", "client", "pool"), edge("e2", "pool", "dep")],
+            annotations: None,
+        }
+    }
+
+    /// `pool`'s own stats, and the run's `failuresByReason`, after `seconds`
+    /// of simulated time. Mirrors `farm_stats` above and
+    /// `bulkhead.acquire.test.ts`'s `snapshotAfter` (same upstream commit).
+    fn pool_stats(
+        client_rps: f64,
+        dependency_service_ms: f64,
+        seconds: f64,
+        patch: impl FnOnce(&mut NodeConfig),
+    ) -> (NodeStats, FailuresByReason) {
+        let mut engine = Engine::new(bulkhead_topology(client_rps, dependency_service_ms, patch), 7);
+        let ticks = (seconds * 60.0) as u32;
+        for _ in 0..ticks {
+            engine.advance(1000.0 / 60.0);
+        }
+        let mut snapshot = engine.snapshot();
+        let stats = snapshot.nodes.remove("pool").expect("pool node");
+        (stats, snapshot.failures_by_reason)
+    }
+
+    /// (a) Regression guard: with every new field left `None` -- a topology
+    /// saved before this feature existed -- the bulkhead behaves exactly as
+    /// it did before #77. No waiting ever happens and the pool's excess
+    /// fails fast as 'bulkhead-full', never 'acquire-timeout'.
+    #[test]
+    fn absent_bulkhead_mode_still_rejects_immediately() {
+        let (stats, failures) = pool_stats(300.0, 200.0, 2.0, |c| {
+            c.bulkhead_mode = None;
+            c.acquire_queue_max = None;
+            c.acquire_timeout_ms = None;
+        });
+        assert_eq!(stats.bulkhead_waiting, Some(0.0), "a Reject bulkhead must never queue a waiter");
+        assert!(
+            stats.bulkhead_rejected_rate.unwrap_or(0.0) > 0.0,
+            "a single-slot pool under load must refuse its excess immediately"
+        );
+        assert_eq!(
+            stats.bulkhead_acquire_timeout_rate,
+            Some(0.0),
+            "no waiter was ever queued, so no acquire-timeout can have fired"
+        );
+        assert_eq!(
+            failures.get(&FailureReason::AcquireTimeout).copied().unwrap_or(0),
+            0,
+            "'reject' mode must never produce an acquire-timeout failure"
+        );
+    }
+
+    /// (b) A queued request that gets a freed slot before its acquire
+    /// timeout elapses completes successfully: the client's offered rate
+    /// (50 rps, mean 20ms gap) stays BELOW the single-slot pool's own
+    /// service rate (1 / 10ms = 100 rps), so the pool is loaded but
+    /// stable -- an arrival that finds the one slot briefly busy still
+    /// gets it well inside a generous acquire timeout, and the queue depth
+    /// Poisson burstiness produces never approaches `acquireQueueMax`.
+    /// Neither 'bulkhead-full' nor 'acquire-timeout' is ever booked.
+    #[test]
+    fn a_waiter_admitted_before_its_timeout_elapses_succeeds() {
+        let (stats, failures) = pool_stats(50.0, 10.0, 2.0, |c| {
+            c.bulkhead_mode = Some(BulkheadMode::Wait);
+            c.acquire_queue_max = Some(100.0);
+            c.acquire_timeout_ms = Some(5000.0);
+        });
+        assert_eq!(
+            stats.bulkhead_acquire_timeout_rate,
+            Some(0.0),
+            "a 5s acquire timeout must never fire against a ~10ms dependency at this load"
+        );
+        assert_eq!(
+            failures.get(&FailureReason::AcquireTimeout).copied().unwrap_or(0),
+            0,
+            "no request should have timed out waiting for a slot"
+        );
+        assert_eq!(
+            failures.get(&FailureReason::BulkheadFull).copied().unwrap_or(0),
+            0,
+            "a stable pool (offered rate below its own service rate) must never overflow a 100-deep queue"
+        );
+        assert!(
+            stats.bulkhead_acquire_latency_ms.is_some(),
+            "at 50% utilisation some arrival must have found the one slot busy and actually waited for it"
+        );
+    }
+
+    /// (c) A queued request that exceeds its acquire timeout is rejected
+    /// with the distinct 'acquire-timeout' reason, and counted in the new
+    /// rate stat: a short `acquireTimeoutMs` against a slow dependency
+    /// means a waiter almost always times out before a slot frees.
+    #[test]
+    fn a_waiter_past_its_timeout_fails_as_acquire_timeout() {
+        let (stats, failures) = pool_stats(100.0, 500.0, 2.0, |c| {
+            c.bulkhead_mode = Some(BulkheadMode::Wait);
+            c.acquire_queue_max = Some(50.0);
+            c.acquire_timeout_ms = Some(20.0);
+        });
+        assert!(
+            stats.bulkhead_acquire_timeout_rate.unwrap_or(0.0) > 0.0,
+            "a 20ms acquire timeout against a 500ms dependency must fire repeatedly"
+        );
+        assert!(
+            failures.get(&FailureReason::AcquireTimeout).copied().unwrap_or(0) > 0,
+            "the engine's own failuresByReason must count the acquire-timeout too"
+        );
+    }
+
+    /// (d) The acquire queue itself is bounded: beyond `acquireQueueMax`,
+    /// a `wait` bulkhead still rejects immediately as 'bulkhead-full'
+    /// rather than growing the queue without limit, and the live queue
+    /// depth never exceeds the configured bound.
+    #[test]
+    fn the_acquire_queue_is_bounded() {
+        let (stats, failures) = pool_stats(300.0, 1000.0, 2.0, |c| {
+            c.bulkhead_mode = Some(BulkheadMode::Wait);
+            c.acquire_queue_max = Some(1.0);
+            c.acquire_timeout_ms = Some(5000.0);
+        });
+        assert!(
+            stats.bulkhead_waiting.unwrap_or(f64::NAN) <= 1.0,
+            "waiting ({:?}) must never exceed acquireQueueMax",
+            stats.bulkhead_waiting
+        );
+        assert!(
+            stats.bulkhead_rejected_rate.unwrap_or(0.0) > 0.0,
+            "arrivals beyond the 1-deep queue must still fail fast as bulkhead-full"
+        );
+        assert!(
+            failures.get(&FailureReason::BulkheadFull).copied().unwrap_or(0) > 0,
+            "the engine's own failuresByReason must count the overflow rejections too"
+        );
+    }
+}

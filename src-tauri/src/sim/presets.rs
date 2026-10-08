@@ -14,7 +14,7 @@
 //! deviation note on `sim::types::NodeKind`), not the 34 this port's task
 //! description assumed; `base_config` below matches every one of them.
 
-use crate::sim::types::{NodeConfig, NodeKind, Topology};
+use crate::sim::types::{BulkheadMode, NodeConfig, NodeKind, Topology};
 use serde::Serialize;
 
 /* -------------------------------------------------------------------- *
@@ -112,6 +112,9 @@ pub fn extra_defaults() -> NodeConfig {
         interval_ms: None,
         batch_size: None,
         bulkhead_max: None,
+        bulkhead_mode: None,
+        acquire_queue_max: None,
+        acquire_timeout_ms: None,
         flush_delay_ms: None,
         edge_share: None,
         low_priority_share: None,
@@ -191,6 +194,9 @@ fn nc(
         interval_ms: None,
         batch_size: None,
         bulkhead_max: None,
+        bulkhead_mode: None,
+        acquire_queue_max: None,
+        acquire_timeout_ms: None,
         flush_delay_ms: None,
         edge_share: None,
         low_priority_share: None,
@@ -400,8 +406,15 @@ pub fn base_config(kind: NodeKind) -> NodeConfig {
         },
         // A pool of 8 concurrent calls. Refusing is free, so no slots, no
         // queue, no service time: the pool count is the whole component.
+        // `bulkheadMode: Reject` plus the two acquire-queue defaults match
+        // upstream `presets.ts`'s `baseConfig()` (upstream `351327c4`, PR
+        // #77) so a freshly-placed bulkhead behaves exactly as before this
+        // feature existed until a reader explicitly switches it to `wait`.
         NodeKind::Bulkhead => NodeConfig {
             bulkhead_max: Some(8.0),
+            bulkhead_mode: Some(BulkheadMode::Reject),
+            acquire_queue_max: Some(100.0),
+            acquire_timeout_ms: Some(1000.0),
             ..nc(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         },
         // Delivery concurrency of 8 at ~3ms dispatch cost. Each failed

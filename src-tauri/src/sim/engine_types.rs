@@ -208,6 +208,31 @@ pub trait BehaviourCtx {
     /// for an open circuit.
     fn reject(&mut self, state: &dyn NodeStateLike, req: &dyn ReqLike, reason: FailureReason);
 
+    /// Resume a request a behaviour deliberately held at admission (a
+    /// bulkhead's acquire queue, so far the only caller) by routing it
+    /// through the engine's zero-service dispatcher, WITHOUT counting a
+    /// second arrival -- the admission already happened once, when the
+    /// request first reached this node. `req` is a handle obtained earlier
+    /// via `handle_of`, not a live view: the request is being resumed from
+    /// a HOOK CALL OTHER THAN the one that admitted it (typically
+    /// `on_downstream_result`, once a slot frees), so no `&dyn ReqLike`
+    /// view of it is available to pass instead. Port of
+    /// `BehaviourCtx.resumeAdmission` (`engine-types.ts`, upstream
+    /// `351327c4`, PR #77).
+    fn resume_admission(&mut self, state: &dyn NodeStateLike, req: ReqHandle);
+
+    /// Schedule a behaviour-owned wakeup: `req`'s behaviour's `on_wake` hook
+    /// fires in `delay_ms`, unless the request resolves or is recycled
+    /// first (the same `ReqHandle` generation guard every other timer in
+    /// this engine uses -- see `sim::engine`'s module doc, "Request
+    /// identity"). The bulkhead's acquire queue uses this for its
+    /// `acquireTimeoutMs` deadline: a request that is resumed via
+    /// `resume_admission` before this timer fires must recognize that in
+    /// its own `on_wake` (its waiter bookkeeping already dropped the
+    /// request) and do nothing. Port of `BehaviourCtx.wakeAfter`
+    /// (`engine-types.ts`, upstream `351327c4`, PR #77).
+    fn wake_after(&mut self, state: &dyn NodeStateLike, req: ReqHandle, delay_ms: f64);
+
     /// Book a behaviour-defined counter against a node, in events per
     /// second over the engine's standard rate window. Counter names are
     /// namespaced per node, so two behaviours can never collide. Read back

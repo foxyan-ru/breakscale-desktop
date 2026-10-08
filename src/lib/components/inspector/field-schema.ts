@@ -544,6 +544,35 @@ export const FIELD_SPECS: Record<InspectorField, FieldSpec> = {
     step: 1,
     hint: 'The pool. Requests arriving with it full are refused immediately.',
   }),
+  // Port of the web app's `ChoiceSpec`/`bulkheadMode` field (upstream
+  // `351327c4`, PR #77), rendered through this app's existing `'enum'`
+  // control kind (the same one `traffic` uses) rather than a new control
+  // type -- see Inspector.svelte's generic grouped-field loop.
+  bulkheadMode: {
+    control: 'enum',
+    label: 'When the pool is full',
+    hint: 'Reject fails immediately. Wait holds a request in a bounded queue until a slot opens, or its own acquire timeout elapses.',
+    options: [
+      { value: 'reject', label: 'Reject' },
+      { value: 'wait', label: 'Wait' },
+    ],
+  },
+  acquireQueueMax: number({
+    label: 'Waiting acquires, at most',
+    unit: 'requests',
+    min: 0,
+    max: 10000,
+    step: 1,
+    hint: 'Only matters in Wait mode. Beyond this many waiters, a request is refused immediately instead of joining the queue.',
+  }),
+  acquireTimeoutMs: slider({
+    label: 'Acquire timeout',
+    unit: 'ms',
+    min: 0,
+    max: 30000,
+    step: 50,
+    hint: 'Only matters in Wait mode. Longest a waiting request sits before it fails as an acquire timeout instead of getting a slot.',
+  }),
   flushDelayMs: slider({
     label: 'Writes sit dirty for',
     unit: 'ms',
@@ -743,7 +772,7 @@ export const FIELDS_BY_KIND: Record<NodeKind, InspectorField[]> = {
   ],
   lambda: ['coldStartMs', 'keepWarmMs', 'maxConcurrency', 'serviceMs', 'serviceCv', 'errorRate'],
   cron: ['intervalMs', 'batchSize'],
-  bulkhead: ['bulkheadMax'],
+  bulkhead: ['bulkheadMax', 'bulkheadMode', 'acquireQueueMax', 'acquireTimeoutMs'],
   retryqueue: ['retries', 'timeoutMs', 'instances', 'capacity', 'serviceMs', 'queueLimit'],
   transcoder: [
     'renditions',
@@ -814,6 +843,9 @@ export const FIELD_GROUPS: { title: string; fields: ReadonlySet<InspectorField> 
       'intervalMs',
       'batchSize',
       'bulkheadMax',
+      'bulkheadMode',
+      'acquireQueueMax',
+      'acquireTimeoutMs',
       'flushDelayMs',
       'edgeShare',
       'lowPriorityShare',
@@ -932,10 +964,22 @@ export function liveReadout(field: InspectorField, stats: NodeStats | null): str
       return stats.breakerState ? `Circuit: ${stats.breakerState}` : null;
     case 'targetUtil': {
       const u = pct(stats.watchedUtil);
-      return u ? `Watched node at ${u}` : null;
+      if (!u) return null;
+      // Reported rather than left silent: the controller reads the load
+      // correctly and then cannot act, and a readout showing only the
+      // utilisation looks like a bug rather than the lesson it is -- a
+      // managed store has no fleet to grow. Ported from upstream
+      // Inspector.tsx's AutoscalerPanel (PR #26); wording kept close to the
+      // source ("adding servers is not the fix").
+      return stats.watchedUnscalable
+        ? `Watched node at ${u} -- adding servers is not the fix here`
+        : `Watched node at ${u}`;
     }
     case 'minCapacity':
     case 'maxCapacity':
+      if (stats.watchedUnscalable) {
+        return 'Watched node has no instances to add or remove';
+      }
       return stats.watchedInstances !== undefined
         ? `Has ${stats.watchedInstances} instance${stats.watchedInstances === 1 ? '' : 's'} now`
         : null;
@@ -992,6 +1036,15 @@ export function liveReadout(field: InspectorField, stats: NodeStats | null): str
       return stats.bulkheadInFlight !== undefined
         ? `In flight: ${stats.bulkheadInFlight} of ${stats.bulkheadLimit ?? '?'}`
         : null;
+    case 'bulkheadMode':
+    case 'acquireQueueMax': {
+      const w = count(stats.bulkheadWaiting);
+      return w ? `Waiting to acquire: ${w}` : null;
+    }
+    case 'acquireTimeoutMs': {
+      const t = rate(stats.bulkheadAcquireTimeoutRate);
+      return t && (stats.bulkheadAcquireTimeoutRate ?? 0) > 0 ? `Acquire timeouts: ${t}` : null;
+    }
     case 'flushDelayMs': {
       const d = count(stats.dirtyWrites);
       return d ? `Dirty writes now: ${d}` : null;

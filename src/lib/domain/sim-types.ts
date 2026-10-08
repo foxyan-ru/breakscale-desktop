@@ -456,6 +456,29 @@ export interface NodeConfig {
    * bounded instead of letting it grow without limit.
    */
   bulkheadMax?: number;
+  /**
+   * Bulkhead only: `'reject'` (the default; `undefined` reads the same
+   * way) fails a request immediately once the pool is full. `'wait'`
+   * holds the caller in a bounded acquire queue instead, up to
+   * `acquireQueueMax` deep, until a slot frees or its own
+   * `acquireTimeoutMs` elapses -- modelling connection-pool exhaustion
+   * (wait, then acquire-timeout, then whatever retry policy the caller
+   * has) rather than only its fail-fast half.
+   */
+  bulkheadMode?: 'reject' | 'wait';
+  /**
+   * Bulkhead only: waiting acquires allowed before a request is shed
+   * immediately as 'bulkhead-full' even with `bulkheadMode: 'wait'`.
+   * Floored to >= 0; defaults to 100 when unset. Only consulted when
+   * `bulkheadMode` is `'wait'`.
+   */
+  acquireQueueMax?: number;
+  /**
+   * Bulkhead only: longest a waiting request may wait to acquire a pool
+   * slot before it fails as 'acquire-timeout', in ms. Defaults to 1000
+   * when unset. Only consulted when `bulkheadMode` is `'wait'`.
+   */
+  acquireTimeoutMs?: number;
 
   /* ---- retryqueue: retried delivery with a dead letter shelf --------- *
    * Reuses the shared knobs: `capacity` is delivery concurrency,
@@ -808,6 +831,14 @@ export interface NodeStats {
   /** Autoscaler only: the watched node's live instance count right now. */
   watchedInstances?: number;
   /**
+   * Autoscaler only: true when the watched node has no fleet to resize, so
+   * the controller can read the load correctly and still be unable to act
+   * (e.g. watching an object store). Ported from upstream `types.ts`
+   * (PR #26); the Inspector copy that reads this lives in
+   * `field-schema.ts`'s `liveReadout()`.
+   */
+  watchedUnscalable?: boolean;
+  /**
    * Autoscaler only: instances decided but still booting. Equal to
    * `targetInstances - watchedInstances` while warming up, else 0. The same
    * number is attached to the WATCHED node as `instancesPending`, so the
@@ -1077,6 +1108,22 @@ export interface NodeStats {
   bulkheadLimit?: number;
   /** Bulkhead only: requests per second refused because the pool was full. */
   bulkheadRejectedRate?: number;
+  /**
+   * Bulkhead only: requests currently waiting to acquire a pool slot. Only
+   * ever nonzero with `bulkheadMode: 'wait'`.
+   */
+  bulkheadWaiting?: number;
+  /**
+   * Bulkhead only: the most recently acquired waiter's measured wait, in
+   * ms, before it got a pool slot. Absent before the first acquire.
+   */
+  bulkheadAcquireLatencyMs?: number;
+  /**
+   * Bulkhead only: acquire attempts per second that reached their
+   * `acquireTimeoutMs` deadline before a slot opened, and failed as
+   * 'acquire-timeout'.
+   */
+  bulkheadAcquireTimeoutRate?: number;
 
   /* ---- retryqueue readouts --------------------------------------------- */
 
@@ -1263,6 +1310,12 @@ export type FailureReason =
   | 'unauthorized'
   /** Refused by a bulkhead: its concurrency pool was already full. */
   | 'bulkhead-full'
+  /**
+   * A bulkhead waiter exceeded its `acquireTimeoutMs` deadline before a
+   * pool slot opened. Only reachable with `bulkheadMode: 'wait'`; a
+   * `'reject'` bulkhead fails as `'bulkhead-full'` instead.
+   */
+  | 'acquire-timeout'
   /** Dropped by a load shedder protecting higher-priority traffic. */
   | 'deprioritized';
 

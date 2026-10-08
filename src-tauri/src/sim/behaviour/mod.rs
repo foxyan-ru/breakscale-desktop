@@ -242,6 +242,25 @@ pub trait ComponentBehaviour: Send + Sync {
     ) {
     }
 
+    /// Fired for a request this behaviour deliberately held at admission
+    /// via `ctx.wake_after` (so far only the bulkhead's acquire queue),
+    /// once that timer elapses. The request may already have been resumed
+    /// through `ctx.resume_admission` by the time this fires (a slot freed
+    /// before the timeout did) -- the default no-op is safe for every
+    /// behaviour that never calls `wake_after` in the first place, and a
+    /// behaviour that does call it must check its own waiter bookkeeping
+    /// before acting, exactly as `BulkheadBehaviour::on_wake` does. Port of
+    /// `ComponentBehaviour.onWake` in `behaviour.ts` (upstream `351327c4`,
+    /// PR #77).
+    fn on_wake(
+        &self,
+        _ctx: &mut dyn BehaviourCtx,
+        _state: &dyn NodeStateLike,
+        _req: &dyn ReqLike,
+        _ext: &mut Ext,
+    ) {
+    }
+
     /// Publish this kind's own readouts onto its `NodeStats` entry at
     /// snapshot time.
     fn decorate_stats(
@@ -331,6 +350,17 @@ impl ComponentBehaviour for ClientBehaviour {
 
 /// A dispatcher. Picks exactly one downstream per request: weighted-random
 /// when the edge weights differ, least-loaded when they are all equal.
+///
+/// Its pool is real. There is deliberately no `on_admit` override here, so
+/// the engine's default (`AdmitAction::Serve`) puts `capacity`, `instances`
+/// and `queueLimit` through the same slot and queue discipline as any other
+/// serving kind. A previous `on_admit` returning `Passthru` skipped all
+/// three, which made an lb's sizing knobs inert -- a pair sized for 2
+/// concurrent calls carried ~3000 rps, `waiting` never moved off 0, and an
+/// autoscaler driving its `instances` had nothing to turn. Fixed upstream in
+/// `behaviour.ts` (commit `79254ce0`, PR #56); see also `engine.ts:1731`'s
+/// `beginZeroService` doc comment, updated in the same commit to stop
+/// describing lb as pass-through.
 pub struct LbBehaviour;
 impl ComponentBehaviour for LbBehaviour {
     fn kind(&self) -> NodeKind {
@@ -359,15 +389,6 @@ impl ComponentBehaviour for LbBehaviour {
     }
     fn credits_join_completion(&self) -> bool {
         true
-    }
-    fn on_admit(
-        &self,
-        _ctx: &mut dyn BehaviourCtx,
-        _state: &dyn NodeStateLike,
-        _req: &dyn ReqLike,
-        _ext: &mut Ext,
-    ) -> AdmitAction {
-        AdmitAction::Passthru
     }
     fn route(
         &self,

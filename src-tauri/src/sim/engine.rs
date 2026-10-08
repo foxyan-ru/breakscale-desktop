@@ -105,6 +105,14 @@ const MAX_DELTA_MS: f64 = 100.0;
 const MAX_EVENTS_PER_ADVANCE: u32 = 60000;
 /// Hop-depth ceiling; deeper resolves as `FailureReason::Depth`.
 const MAX_HOP_DEPTH: u32 = 32;
+/// Instance-count ceiling, matching the Inspector's own slider. The engine
+/// writes one array element per instance on every snapshot
+/// (`fill_slot_instances`/`finish_instances`), so an unbounded count is an
+/// unbounded allocation -- and a design does not only come from the editor:
+/// a shared link, a `.breakscale` file and a restored session all carry
+/// `instances` straight through with no validation of their own.
+/// engine.ts's `MAX_INSTANCES`, PR #58.
+const MAX_INSTANCES: f64 = 512.0;
 /// Trailing window for latency percentiles.
 const LATENCY_WINDOW_MS: f64 = 5000.0;
 /// Capacity of each latency ring buffer.
@@ -155,10 +163,19 @@ enum EvKind {
     /// A request finished traversing an edge with a `latencyMs` and is now
     /// offered.
     LinkArrive,
+    /// A behaviour-owned timer for a request it held at admission (the
+    /// bulkhead's acquire queue, so far the only user). Port of
+    /// `engine.ts`'s `EV_BEHAVIOUR_WAKE` (upstream `351327c4`, PR #77).
+    BehaviourWake,
 }
 
 /// One scheduled event. See the module doc ("Request identity") for why
-/// this carries no separate token/guard field the way TS's `Ev.token` does.
+/// this carries no separate token/guard field the way TS's `Ev.token` does
+/// for every event -- `ReqHandle.generation` already covers every
+/// request-bearing kind. `Arrival` events carry no `ReqHandle` at all, so
+/// they need their own staleness guard: `arrival_generation`, the Rust
+/// analogue of `Ev.token` narrowed to the one case that still needs it (PR
+/// #33). See `push_arrival`.
 struct Ev {
     time: f64,
     seq: u64,
@@ -167,6 +184,12 @@ struct Ev {
     node_id: String,
     /// Request this event concerns; `None` for arrivals and worker polls.
     req: Option<ReqHandle>,
+    /// Set only on an `Arrival` event, to the generating `NodeState`'s
+    /// `arrival_generation` at schedule time. `None` for every other kind.
+    /// Compared against the node's CURRENT generation at dispatch so a
+    /// stale arrival from a removed or retyped client is dropped instead of
+    /// firing against whatever now holds that id.
+    arrival_generation: Option<u32>,
 }
 
 impl Timed for Ev {
@@ -618,6 +641,19 @@ struct NodeState {
     total_completed: f64,
     total_failed: f64,
 
+    /// Identifies the arrival stream for THIS incarnation of a load
+    /// generator. Assigned fresh in `build_nodes()` only when a node is
+    /// genuinely new (created, or kept-by-id but retyped) -- never when an
+    /// existing generator's `NodeState` is reused across a hot swap, which
+    /// is what lets a retained client's already-scheduled `Arrival` event
+    /// keep ticking through the edit instead of being silently restarted.
+    /// A stale event from an incarnation this id no longer has (removed, or
+    /// retyped away from a load-generating kind and back) carries the OLD
+    /// generation and is dropped at `dispatch()` rather than firing against
+    /// the new state. engine.ts:420-423 `NodeState.arrivalGeneration`, PR
+    /// #33.
+    arrival_generation: u32,
+
     /// True once a worker poll event is scheduled, so we do not stack
     /// pollers.
     poll_scheduled: bool,
@@ -802,6 +838,11 @@ pub struct Engine {
 
     nodes: HashMap<String, NodeState>,
     client_ids: Vec<String>,
+    /// Source of the next `NodeState::arrival_generation` handed out in
+    /// `build_nodes()`. Monotonic for the life of the engine; rewound to 1
+    /// only by `reset()`, mirroring `nextArrivalGeneration` in engine.ts
+    /// (PR #33).
+    next_arrival_generation: u32,
     edge_flow: HashMap<String, RateCounter>,
 
     pool: RequestPool,
@@ -830,6 +871,13 @@ pub struct Engine {
     authored_capacity: HashMap<String, f64>,
     /// Same, for the per-shard knob a sharded store is scaled through.
     authored_shard_capacity: HashMap<String, f64>,
+    /// Same, for the instance count a plain service/lb/cache/worker is
+    /// scaled through. `instances` is optional in `NodeConfig`, so an entry
+    /// can be `None`: that records "the preset left it unset", and
+    /// `reset()` has to put the field back to unset rather than skip it,
+    /// because a scale-up will have written a number there. engine.ts
+    /// `authoredInstances`, PR #48.
+    authored_instances: HashMap<String, Option<f64>>,
 
     /// The request currently being traced, or `None` between samples.
     tracing: Option<ReqHandle>,
@@ -848,6 +896,7 @@ impl Engine {
             heap: MinHeap::new(),
             nodes: HashMap::new(),
             client_ids: Vec::new(),
+            next_arrival_generation: 1,
             edge_flow: HashMap::new(),
             pool: RequestPool::new(),
             sys_latency: LatencyRing::new(),
@@ -863,6 +912,7 @@ impl Engine {
             last_history_ms: 0.0,
             authored_capacity: HashMap::new(),
             authored_shard_capacity: HashMap::new(),
+            authored_instances: HashMap::new(),
             tracing: None,
             last_trace: None,
         };
@@ -871,15 +921,21 @@ impl Engine {
         engine
     }
 
-    /// Snapshot the authored capacity of every node, for `reset()` to
-    /// restore. Both scalable knobs are recorded because a controller may
-    /// write either one depending on the target kind's scale field.
+    /// Snapshot the authored scale of every node, for `reset()` to restore.
+    /// All three scalable knobs are recorded, because a controller may
+    /// write any one of them depending on the target kind's scale field --
+    /// restoring only `capacity` would let a controller-scaled sharded
+    /// store carry its grown `shard_capacity` across a reset, or an
+    /// autoscaled service its grown `instances`, so the same seed would
+    /// not replay. engine.ts `recordAuthoredCapacity`, PR #48.
     fn record_authored_capacity(&mut self) {
         self.authored_capacity.clear();
         self.authored_shard_capacity.clear();
+        self.authored_instances.clear();
         for n in &self.topology.nodes {
             self.authored_capacity.insert(n.id.clone(), n.config.capacity);
             self.authored_shard_capacity.insert(n.id.clone(), n.config.shard_capacity);
+            self.authored_instances.insert(n.id.clone(), n.config.instances);
         }
     }
 
@@ -939,6 +995,14 @@ impl Engine {
             }
             if let Some(cap) = patch_obj.get("shardCapacity").and_then(|v| v.as_f64()) {
                 self.authored_shard_capacity.insert(id.to_string(), cap.floor().max(1.0));
+            }
+            // Same for instances: a value the student typed is authored, so
+            // a later hot swap (build_nodes) must treat it as authored, not
+            // mistake it for a controller write. A value written by a
+            // controller goes through set_scale() and deliberately does NOT
+            // land here. PR #48.
+            if let Some(inst) = patch_obj.get("instances").and_then(|v| v.as_f64()) {
+                self.authored_instances.insert(id.to_string(), Some(inst.floor().max(1.0)));
             }
         }
 
@@ -1200,6 +1264,25 @@ impl Engine {
             kind,
             node_id: node_id.to_string(),
             req,
+            arrival_generation: None,
+        });
+    }
+
+    /// Schedule an `Arrival` event carrying `generation` (the generating
+    /// node's `arrival_generation` at schedule time), so a stale event from
+    /// an incarnation of this id that no longer exists is recognized and
+    /// dropped at `dispatch()` rather than firing against whatever now
+    /// holds the id. See `Ev::arrival_generation`'s doc comment; PR #33.
+    fn push_arrival(&mut self, at: f64, node_id: &str, generation: u32) {
+        let seq = self.seq;
+        self.seq = seq + 1;
+        self.heap.push(Ev {
+            time: at,
+            seq,
+            kind: EvKind::Arrival,
+            node_id: node_id.to_string(),
+            req: None,
+            arrival_generation: Some(generation),
         });
     }
 
@@ -1208,7 +1291,24 @@ impl Engine {
             return;
         }
         match ev.kind {
-            EvKind::Arrival => self.on_client_arrival(&ev.node_id),
+            EvKind::Arrival => {
+                // A stale arrival from a client this id no longer is (the
+                // node was removed and a different kind rebuilt under the
+                // same id, or retyped away from a load generator and back)
+                // must not fire against the new incarnation -- that is what
+                // let repeated structural edits multiply one client's
+                // measured rate far past its configured rps. The node
+                // existence check above is not enough: `contains_key` is
+                // still true for a retyped id. PR #33.
+                let fires = self
+                    .nodes
+                    .get(&ev.node_id)
+                    .map(|s| s.behaviour.generates_load() && Some(s.arrival_generation) == ev.arrival_generation)
+                    .unwrap_or(false);
+                if fires {
+                    self.on_client_arrival(&ev.node_id);
+                }
+            }
             EvKind::ServiceDone => {
                 if let Some(handle) = ev.req {
                     if self.pool.get(handle).is_some() {
@@ -1246,13 +1346,37 @@ impl Engine {
                     }
                 }
             }
+            EvKind::BehaviourWake => {
+                // `pool.get` is the same staleness guard every other
+                // request-bearing event kind above uses: a request that
+                // resolved and was recycled by the time this timer fires
+                // (succeeded, failed some other way, or its caller gave up)
+                // has a handle that no longer resolves, so the wake is
+                // silently dropped here, exactly like a stale
+                // ServiceDone/Timeout/Retry. A request that was instead
+                // RESUMED via `resume_admission` before this timer fired is
+                // still live (now in service further downstream) and DOES
+                // reach `on_behaviour_wake` -- the behaviour's own `on_wake`
+                // is what recognizes that case (its waiter bookkeeping no
+                // longer lists the request) and no-ops, the same two-layer
+                // guard `on_timeout`/child-resolution already use elsewhere
+                // in this file.
+                if let Some(handle) = ev.req {
+                    if self.pool.get(handle).is_some() {
+                        self.on_behaviour_wake(&ev.node_id, handle);
+                    }
+                }
+            }
         }
     }
 
     /* ---------------- client ---------------- */
 
     fn schedule_arrival(&mut self, node_id: &str) {
-        let generates_load = self.nodes.get(node_id).map(|s| s.behaviour.generates_load()).unwrap_or(false);
+        let (generates_load, generation) = match self.nodes.get(node_id) {
+            Some(s) => (s.behaviour.generates_load(), s.arrival_generation),
+            None => return,
+        };
         if !generates_load {
             return;
         }
@@ -1262,11 +1386,11 @@ impl Engine {
         if !(rps > 0.0) {
             // Poll again shortly so raising the slider, or a pattern
             // coming back up off its trough, resumes traffic.
-            self.push(self.now + 50.0, EvKind::Arrival, node_id, None);
+            self.push_arrival(self.now + 50.0, node_id, generation);
             return;
         }
         let gap = self.rng.exponential(1000.0 / rps);
-        self.push(self.now + gap, EvKind::Arrival, node_id, None);
+        self.push_arrival(self.now + gap, node_id, generation);
     }
 
     fn on_client_arrival(&mut self, node_id: &str) {
@@ -1275,6 +1399,25 @@ impl Engine {
             return;
         }
         if self.pool.live >= MAX_LIVE_REQUESTS {
+            // Past the live-request ceiling the request is still OFFERED,
+            // and saying so is the whole point: returning silently here
+            // left every rate reading at zero while the design was
+            // maximally overloaded, so a client sending a million a second
+            // reported "offered 0.0/s, served 0.0/s, 0.0% failed" beside a
+            // service pinned at 100% busy -- reading as idle rather than
+            // drowning. The ceiling is this engine protecting itself rather
+            // than anything the design did, but a request the system could
+            // not take IS a shed from the reader's side. engine.ts
+            // `onClientArrival`, commit `7cc1fea9` (no PR).
+            self.total_requests += 1.0;
+            self.sys_offered.add(self.now, 1.0);
+            if let Some(state) = self.nodes.get_mut(node_id) {
+                state.arrivals.add(self.now, 1.0);
+                state.sheds.add(self.now, 1.0);
+                state.total_failed += 1.0;
+            }
+            *self.failures.entry(FailureReason::Shed).or_insert(0) += 1;
+            self.sys_failed.add(self.now, 1.0);
             return;
         }
 
@@ -1747,6 +1890,22 @@ impl Engine {
         }
     }
 
+    /// A behaviour-owned timer (`wake_after`) elapsed for `req`. Dispatched
+    /// only when the request is still live (see `dispatch`'s
+    /// `EvKind::BehaviourWake` arm); the behaviour's own `on_wake` decides
+    /// whether it still cares -- the bulkhead's, for instance, is a no-op
+    /// when `resume_admission` already won the race. Port of `engine.ts`'s
+    /// `EV_BEHAVIOUR_WAKE` dispatch (upstream `351327c4`, PR #77).
+    fn on_behaviour_wake(&mut self, node_id: &str, req: ReqHandle) {
+        let req_view = match self.pool.get(req) {
+            Some(r) => ReqView::of(req, r),
+            None => return,
+        };
+        self.with_node_ext(node_id, |engine, behaviour, node_view, ext| {
+            behaviour.on_wake(engine, node_view, &req_view, ext);
+        });
+    }
+
     fn start_service(&mut self, node_id: &str, req: ReqHandle) {
         if let Some(state) = self.nodes.get_mut(node_id) {
             state.busy += 1.0;
@@ -2018,13 +2177,22 @@ impl Engine {
             return;
         }
 
-        // Attribute the timeout to the caller that gave up.
+        // Attribute the timeout to the caller that gave up. `on_timeout`
+        // solely owns the `timeouts` counter -- giving up is what it means,
+        // and this is the only place that knows it happened. The failure
+        // itself is NOT booked here: `child_resolved`/`resolve` already book
+        // this same caller's `total_failed` once its own request resolves
+        // (every node has exactly one such path, and it fires for every
+        // failure reason, not only this one). Booking it here too double
+        // counted every timeout as two failures instead of one -- up to a
+        // 26% phantom loss -- which is also why the root's `errorRate`
+        // (below, in `snapshot`) has to add `timeoutRate` back in rather
+        // than leave it uncounted. engine.ts:1921-1930, PR #57.
         let parent = self.pool.get(call).and_then(|r| r.parent);
         if let Some(p) = parent {
             if let Some(caller_node_id) = self.pool.get(p).map(|r| r.node_id.clone()) {
                 if let Some(state) = self.nodes.get_mut(&caller_node_id) {
                     state.timeouts.add(self.now, 1.0);
-                    state.total_failed += 1.0;
                 }
             }
         }
@@ -2114,9 +2282,17 @@ impl Engine {
                 *self.failures.entry(reason).or_insert(0) += 1;
                 if let Some(client) = self.nodes.get_mut(&node_id) {
                     client.total_failed += 1.0;
+                    // resolve() owns root totalFailed (just above), but NOT
+                    // the timeout arm of this match: on_timeout already
+                    // attributed the timeout to whichever node actually gave
+                    // up (the direct caller, not necessarily this root
+                    // client), so re-adding it here on every level the
+                    // failure bubbles through is what made a client's
+                    // timeout rate outrun the load it offered. engine.ts
+                    // `resolve()`, PR #57.
                     match reason {
-                        FailureReason::Timeout => client.timeouts.add(self.now, 1.0),
                         FailureReason::Shed => client.sheds.add(self.now, 1.0),
+                        FailureReason::Timeout => {}
                         _ => client.errors.add(self.now, 1.0),
                     }
                 }
@@ -2655,7 +2831,12 @@ impl Engine {
                 Some(v) => v,
                 None => continue,
             };
-            let resolved = completions + errors_per_sec + shed_rate;
+            // Timeouts belong in both halves of this ratio. They were in
+            // neither: `errorRate` answered "how many of the requests that
+            // did NOT time out went wrong", while the cell rendering it
+            // says "failing", and a node losing a quarter of its traffic to
+            // a slow dependency read 0%. engine.ts:833-880, PR #57.
+            let resolved = completions + errors_per_sec + shed_rate + timeout_rate;
 
             // A fresh struct per snapshot, deliberately -- see
             // `engine.ts`'s doc comment on the same choice in its own
@@ -2670,7 +2851,7 @@ impl Engine {
                 p50: node_pct[0],
                 p95: node_pct[1],
                 p99: node_pct[2],
-                error_rate: if resolved > 0.0 { (errors_per_sec + shed_rate) / resolved } else { 0.0 },
+                error_rate: if resolved > 0.0 { (errors_per_sec + shed_rate + timeout_rate) / resolved } else { 0.0 },
                 shed_rate,
                 timeout_rate,
                 hit_rate: if hits + misses > 0.0 { hits / (hits + misses) } else { 0.0 },
@@ -2819,6 +3000,11 @@ impl Engine {
         self.rng = Rng::new(self.seed);
         self.now = 0.0;
         self.seq = 0;
+        // `nodes.clear()` below makes every node `build_nodes()` sees "new",
+        // so every one gets a fresh generation; rewinding the counter here
+        // is what makes those fresh generations start from 1 again, the
+        // same way the first build from `Engine::new()` did. PR #33.
+        self.next_arrival_generation = 1;
         self.heap.clear();
         self.pool.reset();
         self.sys_latency.reset();
@@ -2847,12 +3033,23 @@ impl Engine {
         // run started with.
         let authored_capacity = self.authored_capacity.clone();
         let authored_shard_capacity = self.authored_shard_capacity.clone();
+        let authored_instances = self.authored_instances.clone();
         for n in self.topology.nodes.iter_mut() {
             if let Some(cap) = authored_capacity.get(&n.id) {
                 n.config.capacity = *cap;
             }
             if let Some(cap) = authored_shard_capacity.get(&n.id) {
                 n.config.shard_capacity = *cap;
+            }
+            // `instances` is optional, so an authored value of `None` is a
+            // real state to restore to, not a missing entry: a scale-up
+            // wrote a number here, and leaving it would replay the run from
+            // the grown fleet instead of from what the design was authored
+            // with. Matching on the OUTER `Option` from `.get()` (entry
+            // present at all) rather than flattening is what lets `None`
+            // still be applied. PR #48.
+            if let Some(inst) = authored_instances.get(&n.id) {
+                n.config.instances = *inst;
             }
         }
         // Drop every node's runtime state instead of carrying it into the
@@ -2879,23 +3076,85 @@ impl Engine {
         let mut previous = std::mem::take(&mut self.nodes);
         let mut next: HashMap<String, NodeState> = HashMap::new();
         self.client_ids.clear();
+        // Retained clients (same id, same kind, reused `NodeState`) keep
+        // whatever `Arrival` event they already have in flight; only a
+        // genuinely new incarnation needs one scheduled below. PR #33.
+        let mut new_client_ids: Vec<String> = Vec::new();
 
         for node in &self.topology.nodes {
             let kept = previous.remove(&node.id);
+            let is_new = match &kept {
+                Some(s) => s.kind != node.kind,
+                None => true,
+            };
             let mut state = match kept {
                 Some(mut s) if s.kind == node.kind => {
-                    // Preserve in-flight work across a hot swap.
+                    // Preserve in-flight work across a hot swap. A
+                    // controller (the autoscaler) writes its scale decision
+                    // into `s.config` via `set_scale()` and into the live
+                    // topology mirror, but never into `authored_instances`/
+                    // `authored_shard_capacity`; `node.config` here may
+                    // still be the authored shell's (a fresh `set_topology`
+                    // call built from the frontend's own, non-autoscaled
+                    // mirror), so overwriting `s.config` with it
+                    // unconditionally would revert a live autoscaled fleet
+                    // mid-run and leave the controller's target pointing at
+                    // a size the node no longer has. Keep the live value
+                    // whenever it diverges from authored -- a student edit
+                    // cannot be mistaken for a controller write, since
+                    // `update_node_config` moves the authored map and
+                    // `s.config` together and so shows no divergence.
+                    // engine.ts `buildNodes`:1106-1131, PR #48.
+                    let field = s.behaviour.scale_field();
+                    let live_instances = if field == Some(crate::sim::behaviour::ScaleField::Instances)
+                        && s.config.instances != self.authored_instances.get(&node.id).cloned().flatten()
+                    {
+                        Some(s.config.instances)
+                    } else {
+                        None
+                    };
+                    let live_shard_capacity = if field == Some(crate::sim::behaviour::ScaleField::ShardCapacity)
+                        && self
+                            .authored_shard_capacity
+                            .get(&node.id)
+                            .map(|a| *a != s.config.shard_capacity)
+                            .unwrap_or(false)
+                    {
+                        Some(s.config.shard_capacity)
+                    } else {
+                        None
+                    };
                     s.config = node.config.clone();
+                    if let Some(v) = live_instances {
+                        s.config.instances = v;
+                    }
+                    if let Some(v) = live_shard_capacity {
+                        s.config.shard_capacity = v;
+                    }
                     s.out.clear();
                     s.ctrl.clear();
                     s.sources.clear();
                     s
                 }
-                _ => create_node_state(node),
+                _ => {
+                    let mut s = create_node_state(node);
+                    // A genuinely new incarnation of this id (freshly
+                    // created, or kept-by-id but retyped) gets its own
+                    // arrival generation, so a stale `Arrival` event
+                    // scheduled by whatever this id used to be is
+                    // recognized and dropped at `dispatch()` instead of
+                    // firing against this new state. PR #33.
+                    s.arrival_generation = self.next_arrival_generation;
+                    self.next_arrival_generation += 1;
+                    s
+                }
             };
             state.last_integrate_ms = self.now;
             if state.behaviour.generates_load() {
                 self.client_ids.push(node.id.clone());
+                if is_new {
+                    new_client_ids.push(node.id.clone());
+                }
             }
             next.insert(node.id.clone(), state);
         }
@@ -2970,10 +3229,13 @@ impl Engine {
         }
         self.edge_flow = flow;
 
-        // Restart the generators/pollers; stale ones are ignored via node
-        // lookup.
-        let client_ids = self.client_ids.clone();
-        for id in &client_ids {
+        // Start the generator for each NEW client only. A retained client
+        // keeps the `Arrival` event it already had scheduled; re-arming it
+        // here on every live edit is what let repeated structural edits
+        // multiply one client's measured rate far past its configured rps
+        // (10 edits moved a 51.1 rps client to 488.9 measured rps).
+        // engine.ts `buildNodes`, PR #33.
+        for id in &new_client_ids {
             self.schedule_arrival(id);
         }
 
@@ -3036,7 +3298,15 @@ impl BehaviourCtx for Engine {
     fn effective_instances(&self, state: &dyn NodeStateLike) -> f64 {
         match state.config().instances {
             None => 1.0,
-            Some(raw) => raw.floor().max(1.0),
+            // `.max(1.0)` already answers "NaN" the way this needs -- Rust's
+            // `f64::max` returns the non-NaN operand, unlike JS's
+            // `Math.max(1, Math.floor(NaN))` (which stays NaN and crashes
+            // `units.length = NaN` downstream, the bug PR #58 fixes). What
+            // Rust still needs is the UPPER bound: an unbounded or infinite
+            // `instances` is an unbounded per-instance array allocation in
+            // `fill_slot_instances`/`finish_instances`. engine.ts
+            // `effectiveInstances`, `MAX_INSTANCES`, PR #58.
+            Some(raw) => raw.floor().max(1.0).min(MAX_INSTANCES),
         }
     }
 
@@ -3167,6 +3437,25 @@ impl BehaviourCtx for Engine {
         if let Some(h) = req_handle_of(req) {
             self.resolve(h, false, reason, 0.0);
         }
+    }
+
+    fn resume_admission(&mut self, state: &dyn NodeStateLike, req: ReqHandle) {
+        // Mirrors `admit()`'s own `AdmitAction::Passthru` arm: zero the
+        // drawn service time, then hand off through the same zero-service
+        // path a fresh pass-through admission uses. `on_admit` is
+        // deliberately NOT re-invoked -- it already ran once, when this
+        // request first reached the node; re-running it would ask the
+        // bulkhead to admit the same request a second time. Port of
+        // `engine.ts`'s `resumeAdmission` (upstream `351327c4`, PR #77).
+        if let Some(r) = self.pool.get_mut(req) {
+            r.own_ms = 0.0;
+        }
+        let node_id = state.id().to_string();
+        self.begin_zero_service(&node_id, req);
+    }
+
+    fn wake_after(&mut self, state: &dyn NodeStateLike, req: ReqHandle, delay_ms: f64) {
+        self.push(self.now + delay_ms.max(0.0), EvKind::BehaviourWake, state.id(), Some(req));
     }
 
     fn count_custom(&mut self, state: &dyn NodeStateLike, name: &str, n: f64) {
@@ -3384,6 +3673,10 @@ fn create_node_state(node: &SimNode) -> NodeState {
         latency: LatencyRing::new(),
         total_completed: 0.0,
         total_failed: 0.0,
+        // Reassigned in `build_nodes()` for a genuinely new incarnation;
+        // left at 0 here the same way TS's `createNodeState` does, since
+        // this function has no access to the engine's generation counter.
+        arrival_generation: 0,
         poll_scheduled: false,
         shard_util: Vec::new(),
         instance_units: Vec::new(),
@@ -3495,5 +3788,330 @@ mod tests {
                 "node {id} did different work after reset"
             );
         }
+    }
+
+    /* ---------------- Phase 3A engine-correctness fixes ---------------- */
+
+    use crate::sim::presets::base_config;
+
+    fn node(id: &str, kind: NodeKind, config: NodeConfig) -> SimNode {
+        SimNode { id: id.to_string(), kind, label: id.to_string(), x: 0.0, y: 0.0, config }
+    }
+
+    fn edge(id: &str, from: &str, to: &str) -> SimEdge {
+        SimEdge {
+            id: id.to_string(),
+            from: from.to_string(),
+            to: to.to_string(),
+            weight: 1.0,
+            control: None,
+            latency_ms: None,
+            bandwidth_rps: None,
+            loss_rate: None,
+        }
+    }
+
+    /// PR #56 (`behaviour.ts`'s `lb`): an lb's `onAdmit` must stop
+    /// returning `passthru` so `capacity`/`instances`/`queueLimit` bind
+    /// something. Before the fix `AdmitAction::Passthru` routed every call
+    /// through `begin_zero_service`, which never touches `busy`/`waiting`
+    /// at all -- so a pair sized for 2 concurrent calls carried arbitrary
+    /// load with `queued` pinned at 0 no matter how overloaded it was.
+    #[test]
+    fn lb_admits_through_its_own_pool() {
+        let topo = Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, NodeConfig { rps: 1000.0, ..base_config(NodeKind::Client) }),
+                node(
+                    "lb",
+                    NodeKind::Lb,
+                    NodeConfig {
+                        capacity: 2.0,
+                        instances: Some(1.0),
+                        service_ms: 100.0,
+                        queue_limit: 1000.0,
+                        ..base_config(NodeKind::Lb)
+                    },
+                ),
+                node(
+                    "svc",
+                    NodeKind::Service,
+                    NodeConfig { capacity: 1000.0, service_ms: 1.0, ..base_config(NodeKind::Service) },
+                ),
+            ],
+            edges: vec![edge("e1", "client", "lb"), edge("e2", "lb", "svc")],
+            annotations: None,
+        };
+        let mut engine = Engine::new(topo, 1);
+        engine.advance(200.0);
+        let snap = engine.snapshot();
+        let lb = snap.nodes.get("lb").expect("lb in snapshot");
+
+        assert!(
+            lb.in_flight <= 2.0 + 1e-9,
+            "lb's in_flight must be bounded by its own capacity*instances (2), got {}",
+            lb.in_flight
+        );
+        assert!(
+            lb.queued > 10.0,
+            "an lb overloaded well past its own capacity must show a real backlog, not stay a silent passthrough (got {})",
+            lb.queued
+        );
+    }
+
+    /// PR #57: a timeout must be counted exactly once. `on_timeout` owns
+    /// the `timeouts` counter; `resolve()` owns root `totalFailed`. Before
+    /// the fix both bumped `total_failed` for the same timeout (once in
+    /// `on_timeout` for the caller, once again when `resolve()` finally
+    /// resolved the root as failed with reason `Timeout`), so one real
+    /// timeout read as two failures -- up to 26% phantom loss upstream
+    /// measured.
+    #[test]
+    fn a_timeout_is_counted_exactly_once() {
+        let topo = Topology {
+            nodes: vec![
+                node(
+                    "client",
+                    NodeKind::Client,
+                    NodeConfig { rps: 100.0, timeout_ms: 10.0, retries: 0.0, ..base_config(NodeKind::Client) },
+                ),
+                node(
+                    "svc",
+                    NodeKind::Service,
+                    // Long enough that nothing ever completes inside this
+                    // test's window -- every call must resolve via timeout.
+                    NodeConfig { capacity: 10.0, service_ms: 1.0e8, ..base_config(NodeKind::Service) },
+                ),
+            ],
+            edges: vec![edge("e1", "client", "svc")],
+            annotations: None,
+        };
+        let mut engine = Engine::new(topo, 3);
+        // Generous relative to the 10ms deadline, so every call issued in
+        // this window has definitely timed out and fully resolved by the
+        // end of it.
+        engine.advance(500.0);
+
+        let total_requests = engine.total_requests;
+        assert!(total_requests > 1.0, "test must generate multiple requests to meaningfully exercise the counter");
+        assert_eq!(
+            engine.total_failed, total_requests,
+            "every request must resolve as exactly one engine-level failure -- a double-counted timeout would read 2x total_requests"
+        );
+
+        let snap = engine.snapshot();
+        let client = snap.nodes.get("client").expect("client in snapshot");
+        assert_eq!(
+            client.total_failed, total_requests,
+            "the client's own totalFailed must likewise count each timeout exactly once"
+        );
+    }
+
+    /// PR #33: a retained client must keep its already-scheduled `Arrival`
+    /// event across a structural edit rather than getting a second one
+    /// stacked on top. Before the fix `build_nodes()` called
+    /// `schedule_arrival` for every client on every edit, so N edits left N
+    /// extra arrival streams running concurrently with the original --
+    /// upstream measured a 51.1 rps client read as 488.9 rps after 10
+    /// edits.
+    #[test]
+    fn repeated_structural_edits_do_not_inflate_a_retained_clients_rate() {
+        let topo = Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, NodeConfig { rps: 50.0, ..base_config(NodeKind::Client) }),
+                node(
+                    "svc",
+                    NodeKind::Service,
+                    NodeConfig { capacity: 1000.0, service_ms: 1.0, ..base_config(NodeKind::Service) },
+                ),
+            ],
+            edges: vec![edge("e1", "client", "svc")],
+            annotations: None,
+        };
+
+        let mut baseline = Engine::new(topo.clone(), 42);
+        baseline.advance(1000.0);
+        let baseline_count = baseline.total_requests;
+        assert!(baseline_count > 0.0, "baseline run must generate traffic");
+
+        let mut edited = Engine::new(topo.clone(), 42);
+        for _ in 0..10 {
+            edited.advance(100.0);
+            // Re-submitting the identical topology is a live structural
+            // edit from the engine's point of view: build_nodes() runs
+            // again and the client's NodeState is KEPT (same id, same
+            // kind) -- exactly the retained-client path the fix targets.
+            edited.set_topology(topo.clone());
+        }
+        let edited_count = edited.total_requests;
+
+        let ratio = edited_count / baseline_count;
+        assert!(
+            ratio < 1.5,
+            "10 structural edits must not multiply a retained client's measured rate (baseline {baseline_count}, edited {edited_count}, ratio {ratio})"
+        );
+    }
+
+    /// PR #48: a controller's scale decision must survive a hot swap. A
+    /// controller writes `instances` via `set_scale()` without updating the
+    /// authored map; before the fix `build_nodes()` always overwrote a
+    /// kept node's config with the incoming topology's (authored) one,
+    /// silently reverting a live autoscaled fleet on every structural edit.
+    #[test]
+    fn a_controller_scaled_instance_count_survives_a_hot_swap() {
+        let topo = Topology {
+            nodes: vec![node(
+                "svc",
+                NodeKind::Service,
+                NodeConfig { capacity: 10.0, ..base_config(NodeKind::Service) },
+            )],
+            edges: vec![],
+            annotations: None,
+        };
+        let mut engine = Engine::new(topo.clone(), 1);
+        assert_eq!(engine.scale_of("svc"), Some(1.0), "service starts at the authored instance count");
+
+        // Simulate the autoscaler scaling this node up.
+        engine.set_scale("svc", 5.0);
+        assert_eq!(engine.scale_of("svc"), Some(5.0));
+
+        // A live structural edit elsewhere re-submits the SAME (authored,
+        // un-scaled) node config, exactly as the frontend's own topology
+        // mirror would -- it never learned about the controller's write.
+        engine.set_topology(topo.clone());
+
+        assert_eq!(
+            engine.scale_of("svc"),
+            Some(5.0),
+            "the controller's scale-up must survive a hot swap, not revert to the authored instance count"
+        );
+    }
+
+    /// PR #58: an absurd `instances` must not blow up the per-instance
+    /// snapshot arrays (`fill_slot_instances` allocates one `f64` per
+    /// instance), and a non-numeric one must not propagate NaN into them.
+    #[test]
+    fn huge_or_nan_instances_does_not_crash_the_snapshot() {
+        let topo = Topology {
+            nodes: vec![node(
+                "svc",
+                NodeKind::Service,
+                NodeConfig { capacity: 10.0, ..base_config(NodeKind::Service) },
+            )],
+            edges: vec![],
+            annotations: None,
+        };
+        let mut engine = Engine::new(topo, 1);
+
+        engine.update_node_config("svc", serde_json::json!({ "instances": 1.0e18 })).unwrap();
+        engine.advance(10.0);
+        let snap = engine.snapshot();
+        let instances = snap.nodes.get("svc").and_then(|s| s.instances).unwrap_or(0.0);
+        assert!(instances <= 512.0, "instances must be clamped to MAX_INSTANCES, got {instances}");
+
+        // NaN cannot travel over the wire as JSON, so the realistic
+        // non-numeric path is exercised directly against the stored config
+        // rather than through update_node_config's JSON patch.
+        if let Some(state) = engine.nodes.get_mut("svc") {
+            state.config.instances = Some(f64::NAN);
+        }
+        engine.advance(10.0);
+        let snap2 = engine.snapshot();
+        let instances2 = snap2.nodes.get("svc").and_then(|s| s.instances).unwrap_or(0.0);
+        assert_eq!(instances2, 1.0, "a NaN instances count must fall back to 1, not propagate NaN");
+    }
+
+    /// Commit `7cc1fea9` (no PR#): a request arriving once the live-request
+    /// ceiling is already hit must still be counted as OFFERED and as a
+    /// shed, not silently dropped -- a silent drop left every rate reading
+    /// at zero while the design was maximally overloaded.
+    #[test]
+    fn an_arrival_past_the_live_request_ceiling_is_counted_as_a_shed() {
+        let topo = Topology {
+            nodes: vec![node("client", NodeKind::Client, NodeConfig { rps: 1.0, ..base_config(NodeKind::Client) })],
+            edges: vec![],
+            annotations: None,
+        };
+        let mut engine = Engine::new(topo, 1);
+        engine.pool.live = MAX_LIVE_REQUESTS;
+
+        let requests_before = engine.total_requests;
+        let shed_before = *engine.failures.get(&FailureReason::Shed).unwrap_or(&0);
+
+        engine.on_client_arrival("client");
+
+        assert_eq!(
+            engine.total_requests,
+            requests_before + 1.0,
+            "a request shed at the live-request ceiling must still be counted as offered"
+        );
+        assert_eq!(
+            *engine.failures.get(&FailureReason::Shed).unwrap_or(&0),
+            shed_before + 1,
+            "it must also be booked as a shed, not dropped silently"
+        );
+        let snap = engine.snapshot();
+        let client = snap.nodes.get("client").expect("client in snapshot");
+        assert_eq!(client.total_failed, 1.0, "the client's own totalFailed must count this shed");
+    }
+
+    /// Upstream PR #63 fixes a NaN `regions`/`activeRegion` config killing
+    /// a region switch's routing. This Rust port was found to already be
+    /// immune: `region_count`'s `f64::min`/`max` return the non-NaN operand
+    /// (unlike JS's `Math.min`/`Math.max`, which propagate NaN), and `NaN
+    /// as i64` saturates to 0 (unlike JS's `Math.floor(NaN) === NaN`) --
+    /// so this pins that finding rather than a fix: see
+    /// `behaviour::control::region_count`/`RegionBehaviour::pick_edge`
+    /// (untouched, owned by the sibling agent in this phase).
+    #[test]
+    fn region_switch_routes_through_nan_config_without_a_fix() {
+        let topo = Topology {
+            nodes: vec![
+                node("client", NodeKind::Client, NodeConfig { rps: 50.0, ..base_config(NodeKind::Client) }),
+                node(
+                    "region",
+                    NodeKind::Region,
+                    NodeConfig {
+                        regions: Some(f64::NAN),
+                        active_region: Some(f64::NAN),
+                        failover_ms: Some(0.0),
+                        ..base_config(NodeKind::Region)
+                    },
+                ),
+                node(
+                    "svc0",
+                    NodeKind::Service,
+                    NodeConfig { capacity: 100.0, service_ms: 1.0, ..base_config(NodeKind::Service) },
+                ),
+                node(
+                    "svc1",
+                    NodeKind::Service,
+                    NodeConfig { capacity: 100.0, service_ms: 1.0, ..base_config(NodeKind::Service) },
+                ),
+            ],
+            edges: vec![
+                edge("e1", "client", "region"),
+                edge("e2", "region", "svc0"),
+                edge("e3", "region", "svc1"),
+            ],
+            annotations: None,
+        };
+        let mut engine = Engine::new(topo, 1);
+        engine.advance(500.0);
+        let snap = engine.snapshot();
+        let region = snap.nodes.get("region").expect("region in snapshot");
+
+        assert_eq!(
+            region.regions_total,
+            Some(2.0),
+            "a NaN regions count must fall back to the wired edge count, not propagate NaN"
+        );
+        assert_eq!(
+            region.active_region,
+            Some(0.0),
+            "a NaN activeRegion must fall back to region 0, not stay unresolved"
+        );
+        let client_completed = snap.nodes.get("client").map(|c| c.total_completed).unwrap_or(0.0);
+        assert!(client_completed > 0.0, "the region must still be routing traffic through the NaN config");
     }
 }

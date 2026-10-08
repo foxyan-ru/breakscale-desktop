@@ -187,6 +187,29 @@
 		updateNodeConfig(node.id, { traffic: value });
 	}
 
+	/** Current string value of an `'enum'`-control field (so far only the
+	 * bulkhead's `bulkheadMode`), falling back to the spec's first option --
+	 * the same "older config omits an optional field" reasoning `rawNumber`
+	 * documents above, just for a string-valued field instead of a numeric
+	 * one. Generic over `field` so the grouped loop below needs no
+	 * per-field special case, the same way `onTrafficPatternChange`'s
+	 * hand-written client-only section is special-cased instead. Port of
+	 * the web app's `ChoiceRow` (upstream `351327c4`, PR #77).
+	 */
+	function enumValueOf(n: SimNode, field: InspectorField): string {
+		const v = (n.config as unknown as Record<string, unknown>)[field];
+		if (typeof v === 'string') return v;
+		const spec = specFor(n.kind, field);
+		return spec.control === 'enum' ? (spec.options[0]?.value ?? '') : '';
+	}
+
+	function onEnumCommit(field: InspectorField, e: Event): void {
+		if (!node) return;
+		const value = (e.currentTarget as HTMLSelectElement).value;
+		sessionHistory.touch('setting change', currentSnapshot());
+		updateNodeConfig(node.id, { [field]: value } as Partial<NodeConfig>);
+	}
+
 	/* ---------------------------------------------------------------- *
 	 * Header vitals: a handful of pills, not a full metrics readout (that
 	 * is the metrics-strip/trace panels' job). Gate kinds (rate limiter,
@@ -328,7 +351,7 @@
 					<h3 class="label">{group.title}</h3>
 					<div class="ins-fields">
 						{#each group.fields as field (field)}
-							{@const spec = specFor(n.kind, field) as RangeFieldSpec}
+							{@const spec = specFor(n.kind, field)}
 							{@const value = valueOf(n, field)}
 							{@const live = liveReadout(field, stats)}
 							{#if spec.control === 'number'}
@@ -343,6 +366,20 @@
 										value={value}
 										onchange={(e) => onNumberCommit(field, e)}
 									/>
+								</div>
+							{:else if spec.control === 'enum'}
+								<div class="field">
+									<label class="row-k" for={`ins-${field}`}>{spec.label}</label>
+									<select
+										id={`ins-${field}`}
+										class="ins-select-wide"
+										value={enumValueOf(n, field)}
+										onchange={(e) => onEnumCommit(field, e)}
+									>
+										{#each spec.options as opt (opt.value)}
+											<option value={opt.value}>{opt.label}</option>
+										{/each}
+									</select>
 								</div>
 							{:else}
 								<div class="field-stack ins-row">

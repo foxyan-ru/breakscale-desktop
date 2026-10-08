@@ -440,6 +440,31 @@ pub struct NodeConfig {
     /// bounded instead of letting it grow without limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bulkhead_max: Option<f64>,
+    /// Bulkhead only: `Reject` (the default) fails a request immediately
+    /// once the pool is full, exactly as before this knob existed. `Wait`
+    /// holds the caller in a bounded acquire queue instead, up to
+    /// `acquireQueueMax` deep, until a slot frees or its own
+    /// `acquireTimeoutMs` elapses -- modelling connection-pool exhaustion
+    /// (wait, then acquire-timeout, then the caller's own retry) instead of
+    /// failing fast at the door. `None`/absent means `Reject`, so a
+    /// topology saved before this feature existed is unaffected. Port of
+    /// `behaviour-resilience.ts`'s `bulkheadMode` (upstream `351327c4`, PR
+    /// #77).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bulkhead_mode: Option<BulkheadMode>,
+    /// Bulkhead only: waiting acquires allowed before a request is shed
+    /// immediately as 'bulkhead-full' even with `bulkheadMode: Wait`.
+    /// Floored to >= 0; defaults to 100 when unset. Only consulted when
+    /// `bulkheadMode` is `Wait`. Port of `cfgAcquireQueueMax` (same upstream
+    /// commit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acquire_queue_max: Option<f64>,
+    /// Bulkhead only: longest a waiting request may wait to acquire a pool
+    /// slot before it fails as 'acquire-timeout', in ms. Defaults to 1000
+    /// when unset. Only consulted when `bulkheadMode` is `Wait`. Port of
+    /// `cfgAcquireTimeoutMs` (same upstream commit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acquire_timeout_ms: Option<f64>,
 
     // ---- retryqueue: retried delivery with a dead letter shelf ------------
     // Reuses the shared knobs: `capacity` is delivery concurrency,
@@ -824,6 +849,24 @@ pub struct NodeStats {
     /// Autoscaler only: the watched node's live instance count right now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watched_instances: Option<f64>,
+    /// Autoscaler only: true when the watched node has no fleet to resize,
+    /// so the controller can read the load correctly and still be unable
+    /// to act.
+    ///
+    /// An object store is the case that prompted this: it is modelled as
+    /// one managed service rather than a pool of machines, exactly as S3
+    /// is, so there is no instance count for a controller to move.
+    /// `scale_of()` returns `None` for exactly this case (a kind with
+    /// `scale_field() == None`), which is NOT the same as zero instances --
+    /// without this flag the panel showed a healthy-looking readout beside
+    /// a fleet that never changed, and the only reasonable conclusion for a
+    /// reader was that the autoscaler was broken. That it cannot help here
+    /// is the lesson: when a blob store melts there is no "add servers"
+    /// knob to reach for. types.ts `NodeStats.watchedUnscalable`, PR #26.
+    ///
+    /// Set by `AutoscalerBehaviour::decorate_stats` in `behaviour::control`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watched_unscalable: Option<bool>,
     /// Autoscaler only: instances decided but still booting. Equal to
     /// `targetInstances - watchedInstances` while warming up, else 0. The
     /// same number is attached to the WATCHED node as `instancesPending`,
@@ -1102,6 +1145,20 @@ pub struct NodeStats {
     /// full.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bulkhead_rejected_rate: Option<f64>,
+    /// Bulkhead only: requests currently waiting to acquire a pool slot.
+    /// Only ever nonzero with `bulkheadMode: Wait`. Port of
+    /// `BulkheadState.waiters.length` (upstream `351327c4`, PR #77).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bulkhead_waiting: Option<f64>,
+    /// Bulkhead only: the most recently acquired waiter's measured wait, in
+    /// ms, before it got a pool slot. `None` before the first acquire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bulkhead_acquire_latency_ms: Option<f64>,
+    /// Bulkhead only: acquire attempts per second that reached their
+    /// `acquireTimeoutMs` deadline before a slot opened, and failed as
+    /// 'acquire-timeout'.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bulkhead_acquire_timeout_rate: Option<f64>,
 
     // ---- retryqueue readouts -----------------------------------------------------------
     /// Retry queue only: messages per second delivered downstream
@@ -1235,6 +1292,21 @@ pub struct SystemStats {
     pub total_failed: f64,
 }
 
+/// Bulkhead admission policy once the pool is full. Port of
+/// `behaviour-resilience.ts`'s `bulkheadMode` union, `'reject' | 'wait'`
+/// (upstream `351327c4`, PR #77); `#[serde(rename_all = "lowercase")]`
+/// reproduces those two literals exactly, the same convention `FailureKind`
+/// below uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BulkheadMode {
+    /// Fail a request immediately once the pool is full. The default.
+    Reject,
+    /// Hold a request in the bounded acquire queue instead of failing it
+    /// immediately.
+    Wait,
+}
+
 /// How a client's offered rate varies over time.
 ///
 /// Each pattern scales the client's `rps` baseline; none of them replaces
@@ -1289,7 +1361,8 @@ pub const DEFAULT_TRAFFIC_PERIOD_S: f64 = 60.0;
 /// `throttled`, `rejected`, `crashed`, `partitioned`, `region-down`,
 /// `conn-refused`, `unauthorized`, `bulkhead-full`, `deprioritized`). This
 /// port follows the actual source file exactly -- see the deviation note in
-/// the porting agent's final report.
+/// the porting agent's final report. A 15th variant, `AcquireTimeout`, was
+/// added afterward by upstream `351327c4` (PR #77).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FailureReason {
@@ -1318,14 +1391,19 @@ pub enum FailureReason {
     Unauthorized,
     /// Refused by a bulkhead: its concurrency pool was already full.
     BulkheadFull,
+    /// A bulkhead waiter exceeded its `acquireTimeoutMs` deadline before a
+    /// pool slot opened. Only reachable with `bulkheadMode: Wait`; a
+    /// `Reject` bulkhead fails as `BulkheadFull` instead, exactly as before
+    /// this variant existed. Port of `351327c4` (PR #77).
+    AcquireTimeout,
     /// Dropped by a load shedder protecting higher-priority traffic.
     Deprioritized,
 }
 
-/// All 14 `FailureReason` variants, in declaration order. Used to build
+/// All 15 `FailureReason` variants, in declaration order. Used to build
 /// `empty_failures_by_reason()` and by anything that needs to enumerate
 /// every reason without hand-maintaining a second list.
-pub const ALL_FAILURE_REASONS: [FailureReason; 14] = [
+pub const ALL_FAILURE_REASONS: [FailureReason; 15] = [
     FailureReason::Error,
     FailureReason::Shed,
     FailureReason::Timeout,
@@ -1339,6 +1417,7 @@ pub const ALL_FAILURE_REASONS: [FailureReason; 14] = [
     FailureReason::ConnRefused,
     FailureReason::Unauthorized,
     FailureReason::BulkheadFull,
+    FailureReason::AcquireTimeout,
     FailureReason::Deprioritized,
 ];
 

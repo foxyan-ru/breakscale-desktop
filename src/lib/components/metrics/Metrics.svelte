@@ -221,6 +221,7 @@
     'conn-refused',
     'unauthorized',
     'bulkhead-full',
+    'acquire-timeout',
     'deprioritized',
   ];
 
@@ -238,6 +239,7 @@
     'conn-refused': 'conn refused',
     unauthorized: 'unauthorized',
     'bulkhead-full': 'bulkhead full',
+    'acquire-timeout': 'acquire timeout',
     deprioritized: 'deprioritized',
   };
 
@@ -256,6 +258,13 @@
     'conn-refused': 'conn-refused',
     unauthorized: 'unauthorized',
     'bulkhead-full': 'bulkhead-full',
+    // Reuses the 'bulkhead-full' glossary entry rather than a dedicated
+    // one: an acquire-timeout is a bulkhead refusing a waiter, the same
+    // concept the existing entry already explains (extended to mention the
+    // wait path -- see glossary.json's 'bulkhead-full' entry). Matches
+    // upstream's own choice here (`behaviour-resilience.ts`'s
+    // `REASON_TERM`, upstream `351327c4`, PR #77).
+    'acquire-timeout': 'bulkhead-full',
     deprioritized: 'deprioritized',
   };
 
@@ -951,7 +960,7 @@
     stroke: none;
   }
 
-  /* Stacked failure bands. Solid but not heavy: up to fourteen of them can
+  /* Stacked failure bands. Solid but not heavy: up to fifteen of them can
      be on screen at once, and at full opacity the stack becomes one dark
      mass. */
   .mx-band {
@@ -960,20 +969,22 @@
   }
 
   /* --------------------------------------------------------------------
-     Failure reason colours. Ten of the fourteen below (error through
+     Failure reason colours. Ten of the fifteen below (error through
      region-down) are ported unchanged from Metrics.css, where every one
      measures at least 3.27:1 against --surface (chosen by maximising the
-     minimum OKLab distance between any two). The remaining four
-     (conn-refused/unauthorized/bulkhead-full/deprioritized) are a GAP this
-     port fixes: `FailureReason` (sim-types.ts) has always had 14 variants,
+     minimum OKLab distance between any two). The remaining five
+     (conn-refused/unauthorized/bulkhead-full/acquire-timeout/
+     deprioritized) are a GAP this port fixes: `FailureReason`
+     (sim-types.ts) had 14 variants when this comment was first written
+     (now 15, with 'acquire-timeout' added by upstream `351327c4`, PR #77),
      but the source Metrics.css only ever defined 10 `.mx-fill-*` rules, so
-     those four reasons rendered with no fill at all in the original app.
-     Filled in here using each reason's OWN originating component's
+     those reasons rendered with no fill at all in the original app. Filled
+     in here using each reason's OWN originating component's
      `--kind-*-stroke` token (conn-refused -> websocket, unauthorized ->
-     apigateway, bulkhead-full -> bulkhead, deprioritized -> loadshedder) --
-     already-measured AA-for-graphics colours from the per-kind system in
-     app.css, and a mnemonic a reader can learn ("bulkhead-full is
-     bulkhead-coloured").
+     apigateway, bulkhead-full/acquire-timeout -> bulkhead, deprioritized ->
+     loadshedder) -- already-measured AA-for-graphics colours from the
+     per-kind system in app.css, and a mnemonic a reader can learn
+     ("bulkhead-full is bulkhead-coloured").
      -------------------------------------------------------------------- */
 
   .mx-fill-error {
@@ -1038,6 +1049,11 @@
   }
 
   .mx-fill-bulkhead-full {
+    fill: var(--kind-bulkhead-stroke);
+    color: var(--kind-bulkhead-stroke);
+  }
+
+  .mx-fill-acquire-timeout {
     fill: var(--kind-bulkhead-stroke);
     color: var(--kind-bulkhead-stroke);
   }
@@ -1205,7 +1221,7 @@
     font-weight: var(--fw-body);
   }
 
-  /* The healthy case: one calm line, not fourteen rows of zeros. */
+  /* The healthy case: one calm line, not fifteen rows of zeros. */
   .mx-clean {
     margin-top: var(--sp-2);
     min-height: 18px;
