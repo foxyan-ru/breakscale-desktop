@@ -661,6 +661,18 @@
   }
 
   onMount(() => {
+    // DIAGNOSTIC PROBE (temporary -- remove once the v0.2.1 regression is
+    // root-caused): a shipped build of this exact onMount body was found,
+    // via live CDP inspection of the installed app, to be missing not just
+    // `startListening()` but EVERY trace of this function's code (no
+    // `addEventListener('keydown', ...)`, no `visualViewport`, no `resize`
+    // listener -- nothing past this point) from the compiled
+    // `_app/immutable/nodes/*.js` bundle, while the exact same invoke()
+    // calls later in this same onMount (`presets_list`, `sim_set_running`,
+    // ...) DID fire. This marker exists to answer one question with a
+    // single CI round-trip: does ANY of onMount's top-level body survive
+    // the production build at all, or is something eliminating all of it?
+    console.error('BREAKSCALE_PROBE_ONMOUNT_TOP_V1');
     window.addEventListener('keydown', onWindowKeyDown);
 
     // Bar measurement (see the block above `onWindowKeyDown`). jsdom has no
@@ -711,9 +723,11 @@
     // static-adapter-in-a-custom-protocol-webview build, the fix moves the
     // one subscription the whole app depends on into the mount hook that
     // is actually, verifiably, reliably running.
+    console.error('BREAKSCALE_PROBE_BEFORE_STARTLISTENING_V1');
     let listeningCancelled = false;
     let stopListening: (() => void) | undefined;
     void startListening().then((stop) => {
+      console.error('BREAKSCALE_PROBE_STARTLISTENING_RESOLVED_V1');
       if (listeningCancelled) stop();
       else stopListening = stop;
     });
