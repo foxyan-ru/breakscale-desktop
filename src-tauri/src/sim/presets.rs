@@ -615,27 +615,9 @@ pub fn all_presets() -> Vec<PresetSummary> {
     }
 }
 
-/// The topology the app boots with, before the webview's startup runs:
-/// the first entry `presets_list` returns (so the frontend's own bootstrap
-/// lands on the identical topology -- and seed, see `lib.rs`'s `setup` --
-/// whatever order the two sides read the list in), falling back to a blank
-/// topology if the embedded index were ever empty.
-pub fn boot_topology() -> Topology {
-    all_presets()
-        .first()
-        .and_then(|summary| preset_by_id(&summary.id))
-        .map(|preset| preset.topology)
-        .unwrap_or(Topology {
-            nodes: vec![],
-            edges: vec![],
-            annotations: None,
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::engine::Engine;
 
     /// `_index.json` (what `presets_list` serves) and `PRESET_FILES` (what
     /// `preset_load` reads) are two hand-maintained lists of the same ids:
@@ -661,11 +643,13 @@ mod tests {
     }
 
     /// Every preset the frontend can ask for must deserialize (through the
-    /// exact `serde` path `preset_load` uses), round-trip losslessly, and
-    /// build an engine -- so `preset_load` can never fail on checked-in
-    /// data, which is the backend half of the Examples-overlay contract.
+    /// exact `serde` path `preset_load` uses) and round-trip losslessly --
+    /// so `preset_load` can never fail on checked-in data, which is the
+    /// backend half of the Examples-overlay contract. (Building an engine
+    /// from each preset is the frontend's job now: the engine runs in the
+    /// webview, `desktop/src/lib/sim/`.)
     #[test]
-    fn every_listed_preset_parses_round_trips_and_builds() {
+    fn every_listed_preset_parses_and_round_trips() {
         for summary in all_presets() {
             let preset = preset_by_id(&summary.id)
                 .unwrap_or_else(|| panic!("preset '{}' failed to load", summary.id));
@@ -679,31 +663,16 @@ mod tests {
                 "preset '{}' does not round-trip losslessly",
                 summary.id
             );
-            Engine::new(preset.topology, 1);
         }
     }
 
-    /// The native boot engine and the frontend's startup must agree: the
-    /// default topology is whatever `presets_list` leads with, so the
-    /// webview's bootstrap replaces it with an identical one.
-    #[test]
-    fn boot_topology_is_the_first_listed_preset() {
-        let list = all_presets();
-        let expected = preset_by_id(&list[0].id).expect("first listed preset must load");
-        assert_eq!(
-            serde_json::to_value(boot_topology()).unwrap(),
-            serde_json::to_value(&expected.topology).unwrap(),
-            "boot_topology() must equal the preset presets_list serves first"
-        );
-    }
-
-    /// The blank topology (the frontend's initial store and the fallback
-    /// when the index is empty) must satisfy the same deserializer
-    /// `sim_new` runs its argument through.
+    /// The blank topology (the frontend's initial store) must satisfy the
+    /// same `Topology` deserializer every topology-taking command
+    /// (`designs_save`, `design_file_build`, `sysdesign_derive_high_level`,
+    /// ...) runs its argument through.
     #[test]
     fn blank_topology_deserializes() {
         let t: Topology = serde_json::from_str(r#"{"nodes":[],"edges":[]}"#).unwrap();
         assert!(t.nodes.is_empty() && t.edges.is_empty() && t.annotations.is_none());
-        Engine::new(t, 1);
     }
 }

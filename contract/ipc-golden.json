@@ -1,15 +1,6 @@
 {
   "$comment": "Golden IPC contract for Breakscale desktop. One fixture, checked from BOTH sides: src-tauri/src/contract_tests.rs (cargo test) and src/lib/api/__tests__/ipc-contract.test.ts (vitest + svelte-check). Pins the registered command inventory, every command's wire argument keys (all = every key the Rust signature accepts, required = keys Tauri rejects the payload without) and every payload's exact key set. Payload instances are deliberately FULLY populated -- every optional field carries a value -- so serde's skip_serializing_if optionals are pinned on the wire, not just the required core. topology and appErrorPayload are free payloads (arguments / error envelope rather than command returns). NOTE ON VALUES: payload values are illustrative SHAPE samples, not clones of live data -- real glossary/preset/challenge/vendor strings and validator messages drift over time, so Rust-side live-invocation tests assert key shapes plus stable identifiers only, while constructed pins compare keys exactly and require string/bool/null values to match (numbers compare as JSON numbers only, since serde f64 fields normalise integer literals).",
   "commands": [
-    "sim_new",
-    "sim_set_topology",
-    "sim_update_node_config",
-    "sim_inject_failure",
-    "sim_clear_failure",
-    "sim_reset",
-    "sim_step",
-    "sim_set_running",
-    "sim_get_snapshot",
     "designs_list",
     "designs_save",
     "designs_get",
@@ -44,15 +35,6 @@
     "layout_save"
   ],
   "commandArgs": {
-    "sim_new": { "all": ["topology", "seed"], "required": ["topology"] },
-    "sim_set_topology": { "all": ["topology"], "required": ["topology"] },
-    "sim_update_node_config": { "all": ["nodeId", "patch"], "required": ["nodeId", "patch"] },
-    "sim_inject_failure": { "all": ["nodeId", "kind", "opts"], "required": ["nodeId", "kind", "opts"] },
-    "sim_clear_failure": { "all": ["nodeId"], "required": ["nodeId"] },
-    "sim_reset": { "all": [], "required": [] },
-    "sim_step": { "all": ["deltaMs"], "required": [] },
-    "sim_set_running": { "all": ["running"], "required": ["running"] },
-    "sim_get_snapshot": { "all": [], "required": [] },
     "designs_list": { "all": [], "required": [] },
     "designs_save": { "all": ["name", "topology"], "required": ["name", "topology"] },
     "designs_get": { "all": ["id"], "required": ["id"] },
@@ -81,15 +63,6 @@
     "layout_save": { "all": ["layout"], "required": ["layout"] }
   },
   "commandReturns": {
-    "sim_new": null,
-    "sim_set_topology": null,
-    "sim_update_node_config": null,
-    "sim_inject_failure": null,
-    "sim_clear_failure": null,
-    "sim_reset": null,
-    "sim_step": null,
-    "sim_set_running": null,
-    "sim_get_snapshot": ["simSnapshot"],
     "designs_list": ["savedSummary"],
     "designs_save": ["saveResultOk", "saveResultErr"],
     "designs_get": ["savedDesign"],
@@ -118,18 +91,8 @@
     "layout_save": null
   },
   "freePayloads": ["topology", "appErrorPayload"],
-  "events": {
-    "sim://snapshot": ["simSnapshot"],
-    "sim://tick-error": ["tickError"]
-  },
+  "events": {},
   "argSamples": {
-    "nodeId": "node-1",
-    "patch": { "capacity": 12 },
-    "kind": "slow",
-    "opts": { "factor": 3, "rate": 0.1, "edgeIds": ["edge-1"] },
-    "running": true,
-    "deltaMs": 250,
-    "seed": 7,
     "id": "sample-id",
     "name": "Sample design",
     "path": "contract-test.breakscale-backup.json",
@@ -141,182 +104,6 @@
     "layout": { "rail": "collapsed" }
   },
   "payloads": {
-    "simSnapshot": {
-      "system": {
-        "timeMs": 12000,
-        "offeredRps": 480,
-        "goodputRps": 462,
-        "errorRate": 0.018,
-        "p50": 42,
-        "p95": 180,
-        "p99": 410,
-        "totalRequests": 5760000,
-        "totalFailed": 103680
-      },
-      "nodes": {
-        "client-1": {
-          "inFlight": 38,
-          "queued": 12,
-          "throughput": 462,
-          "arrivalRate": 480,
-          "utilization": 0.63,
-          "p50": 42,
-          "p95": 180,
-          "p99": 410,
-          "errorRate": 0.018,
-          "shedRate": 0,
-          "timeoutRate": 0.004,
-          "hitRate": 0.72,
-          "totalCompleted": 5656320,
-          "totalFailed": 103680,
-          "instances": 2,
-          "instancesPending": 0,
-          "perInstance": [19, 19],
-          "queueLimit": 100,
-          "targetInstances": 2,
-          "watchedInstances": 2,
-          "watchedUnscalable": false,
-          "pendingInstances": 0,
-          "watchedId": "api-1",
-          "watchedUtil": 0.63,
-          "setpoint": 0.7,
-          "scalePhase": "steady",
-          "phaseRemainingMs": 0,
-          "scaling": false,
-          "activeRegion": 0,
-          "failingOver": false,
-          "failoverRemainingMs": 0,
-          "regionsHealthy": 2,
-          "regionsTotal": 2,
-          "liveEdgeId": "edge-1",
-          "staleReadRate": 0.012,
-          "maxShardUtilization": 0.81,
-          "minShardUtilization": 0.44,
-          "shardUtilization": [0.81, 0.44, 0.52, 0.6],
-          "originFetchRate": 18,
-          "admittedRate": 470,
-          "throttledRate": 10,
-          "tokens": 84,
-          "breakerState": "closed",
-          "breakerErrorRate": 0.02,
-          "rejectedRate": 0,
-          "breakerTrips": 1,
-          "openRemainingMs": 0,
-          "staleSearchRate": 0.03,
-          "searchRate": 64,
-          "indexWriteRate": 21,
-          "appendRate": 120,
-          "rangeQueryRate": 30,
-          "traversalCostMs": 28,
-          "queryCostMs": 14,
-          "consumerLag": 240,
-          "consumerLagByGroup": [140, 100],
-          "deliveryRate": 455,
-          "retentionDropRate": 0,
-          "fanout": 6,
-          "publishAmplification": 6,
-          "connectionsOpen": 320,
-          "maxConnections": 800,
-          "connectRate": 12,
-          "connectionRejectRate": 0,
-          "authRejectRate": 0.004,
-          "consecutiveFails": 0,
-          "upstreamFailRate": 0.01,
-          "coldStartRate": 0.05,
-          "coldStartsPerSec": 0.4,
-          "warmIdle": 1,
-          "runningNow": 3,
-          "nextFireInMs": 1800000,
-          "batchEmitted": 24000,
-          "burstSize": 500,
-          "bulkheadInFlight": 4,
-          "bulkheadLimit": 8,
-          "bulkheadRejectedRate": 0,
-          "bulkheadWaiting": 2,
-          "bulkheadAcquireLatencyMs": 15,
-          "bulkheadAcquireTimeoutRate": 0.5,
-          "deliveredRate": 440,
-          "redeliveryRate": 2.5,
-          "deadLetterRate": 0.1,
-          "deadLetters": 12,
-          "dirtyWrites": 45,
-          "flushedRate": 110,
-          "flushFailRate": 0.2,
-          "edgeHandledRate": 276,
-          "passedThroughRate": 186,
-          "highAdmittedRate": 376,
-          "lowAdmittedRate": 94,
-          "highSheddedRate": 0,
-          "lowSheddedRate": 10,
-          "readRate": 320,
-          "writeRate": 142,
-          "lockWaitMs": 3.4,
-          "slowdownRate": 6,
-          "outputRate": 42,
-          "cpuExceededRate": 7
-        }
-      },
-      "history": [
-        {
-          "t": 11900,
-          "p50": 42,
-          "p95": 180,
-          "p99": 410,
-          "goodput": 462,
-          "offered": 480,
-          "errorRate": 0.018
-        }
-      ],
-      "edgeFlow": { "edge-1": 462 },
-      "edgeState": { "edge-1": "live" },
-      "failuresByReason": {
-        "error": 54000,
-        "shed": 12000,
-        "timeout": 24000,
-        "no-route": 3600,
-        "depth": 1800,
-        "throttled": 3000,
-        "rejected": 900,
-        "crashed": 1500,
-        "partitioned": 600,
-        "region-down": 120,
-        "conn-refused": 60,
-        "unauthorized": 120,
-        "bulkhead-full": 45,
-        "acquire-timeout": 30,
-        "deprioritized": 375
-      },
-      "activeFailures": [
-        {
-          "nodeId": "api-1",
-          "kind": "slow",
-          "sinceMs": 9000,
-          "factor": 3,
-          "rate": 0,
-          "edgeIds": []
-        }
-      ],
-      "trace": {
-        "startMs": 11760,
-        "totalMs": 412,
-        "ok": false,
-        "reason": "timeout",
-        "hops": [
-          {
-            "nodeId": "client-1",
-            "depth": 0,
-            "queuedMs": 4,
-            "serviceMs": 2
-          },
-          {
-            "nodeId": "api-1",
-            "depth": 1,
-            "queuedMs": 210,
-            "serviceMs": 196
-          }
-        ]
-      }
-    },
     "topology": {
       "nodes": [
         {
@@ -832,9 +619,6 @@
     "appErrorPayload": {
       "kind": "validation",
       "message": "A design needs at least one node."
-    },
-    "tickError": {
-      "message": "The simulation stopped unexpectedly. Reset to continue."
     }
   }
 }

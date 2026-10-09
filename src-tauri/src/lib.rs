@@ -1,13 +1,13 @@
-//! Crate root: the Tauri app builder. Registers every command handler and
-//! the one piece of managed state (`state::SimulationState`); everything
-//! else lives in its own module -- see MIGRATION_PLAN.md #3 for the full
-//! directory map.
+//! Crate root: the Tauri app builder. Registers every command handler;
+//! everything else lives in its own module -- see MIGRATION_PLAN.md #3 for
+//! the full directory map. There is no managed state: the simulation engine
+//! runs in-process in the webview (`desktop/src/lib/sim/`), so the Rust
+//! engine, its tick thread and the `sim_*` commands are gone.
 
 pub mod commands;
 pub mod error;
 pub mod persistence;
 pub mod sim;
-pub mod state;
 pub mod sysdesign;
 pub mod util;
 pub mod vendors;
@@ -15,7 +15,7 @@ pub mod vendors;
 // The Rust half of the shared IPC contract suite (`contract/ipc-golden.json`
 // is the golden fixture; the frontend's vitest suite checks the TS side
 // against the same bytes). WHY: it pins every command name, argument key
-// set and payload key set of all 35 handlers, so a wire rename or a gained/
+// set and payload key set of all 26 handlers, so a wire rename or a gained/
 // dropped field fails `cargo test` here instead of surfacing as an opaque
 // serde error (or a silently stale frontend) at runtime. Test-only, so it
 // never links into the shipped app.
@@ -26,33 +26,7 @@ mod contract_tests;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(state::SimulationState::default())
-        .setup(|app| {
-            // Install a default engine BEFORE the webview can invoke
-            // anything: the first built-in example (the same preset
-            // `presets_list` leads with, so the frontend's own bootstrap
-            // swaps in an identical topology and seed), falling back to a
-            // blank topology. With this, `require_engine` can never reject
-            // with "No design is loaded yet." -- every engine command works
-            // from the first frame and the tick thread is already emitting
-            // `sim://snapshot` events, whatever the frontend bootstrap does.
-            use tauri::Manager;
-            let topology = sim::presets::boot_topology();
-            app.state::<state::SimulationState>()
-                .install(app.handle(), sim::engine::Engine::new(topology, 1));
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
-            // sim
-            commands::sim::sim_new,
-            commands::sim::sim_set_topology,
-            commands::sim::sim_update_node_config,
-            commands::sim::sim_inject_failure,
-            commands::sim::sim_clear_failure,
-            commands::sim::sim_reset,
-            commands::sim::sim_step,
-            commands::sim::sim_set_running,
-            commands::sim::sim_get_snapshot,
             // designs / design file
             commands::designs::designs_list,
             commands::designs::designs_save,

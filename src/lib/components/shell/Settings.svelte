@@ -310,7 +310,7 @@
 					<p class="prose se-hint">
 						{settingsStore.vendor === 'generic'
 							? 'Components keep their plain names. Learn the idea first; the product names are easier afterwards.'
-							: 'Components are named after this vendorâ€™s products. The published specs are cited; how they map to capacity is our own estimate.'}
+							: 'Components are named after this vendor’s products. The published specs are cited; how they map to capacity is our own estimate.'}
 					</p>
 				</section>
 
@@ -344,7 +344,7 @@
 							onclick={doBackup}
 							disabled={backupBusy}
 						>
-							{backupBusy ? 'Savingâ€¦' : 'Download everythingâ€¦'}
+							{backupBusy ? 'Saving…' : 'Download everything…'}
 						</button>
 						<button
 							type="button"
@@ -352,7 +352,7 @@
 							onclick={doRestore}
 							disabled={restoreBusy}
 						>
-							{restoreBusy ? 'Restoringâ€¦' : 'Restore from a fileâ€¦'}
+							{restoreBusy ? 'Restoring…' : 'Restore from a file…'}
 						</button>
 					</div>
 					{#if backupError}

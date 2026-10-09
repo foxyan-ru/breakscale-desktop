@@ -1,7 +1,7 @@
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { invoke } from '@tauri-apps/api/core';
+import { simUpdateNodeConfig } from '$lib/state/simulation.svelte';
 import Inspector from '../Inspector.svelte';
 import { specFor, type RangeFieldSpec } from '../field-schema';
 import { topologyStore, select, clearSelection } from '$lib/state/topology.svelte';
@@ -23,16 +23,26 @@ import type { SimNode } from '$lib/domain';
  * `min`/`max` attributes promise.
  *
  * These tests seed the selection exactly as `inspector-close.test.ts` does
- * and assert against the IPC bridge: no write reaches Rust unless it is a
- * finite, in-range number.
+ * and assert against the ENGINE boundary: no write reaches the engine
+ * unless it is a finite, in-range number. That boundary used to be the IPC
+ * bridge (`invoke('sim_update_node_config', ...)`); the engine is in-process
+ * now (`state/simulation.svelte.ts`), so `topology.svelte.ts`'s
+ * `updateNodeConfig` calls `simUpdateNodeConfig` directly and `invoke` is
+ * never reached -- asserting on it would make the "not called" cases pass
+ * vacuously. The spy wraps the real function, so the engine still applies
+ * the patch exactly as in the app.
  */
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve(null)) }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock('$lib/state/simulation.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/state/simulation.svelte')>();
+  return { ...actual, simUpdateNodeConfig: vi.fn(actual.simUpdateNodeConfig) };
+});
 
-const mockedInvoke = vi.mocked(invoke);
+const mockedEngineUpdate = vi.mocked(simUpdateNodeConfig);
 
 /** The number input for `capacity`, the field these tests drive. */
 function capacityInput(container: Element): HTMLInputElement {
@@ -48,7 +58,7 @@ describe('typed number commits', () => {
     node = makeNode('service', 0, 0);
     topologyStore.topology.nodes.push(node);
     select(node.id, null);
-    mockedInvoke.mockClear();
+    mockedEngineUpdate.mockClear();
   });
 
   afterEach(() => {
@@ -63,16 +73,13 @@ describe('typed number commits', () => {
 
   it('commits a valid typed number, in range', async () => {
     const { container } = render(Inspector);
-    mockedInvoke.mockClear();
+    mockedEngineUpdate.mockClear();
 
     await fireEvent.change(capacityInput(container), { target: { value: '20' } });
     await tick();
 
-    expect(mockedInvoke).toHaveBeenCalledTimes(1);
-    expect(mockedInvoke).toHaveBeenCalledWith('sim_update_node_config', {
-      nodeId: node.id,
-      patch: { capacity: 20 },
-    });
+    expect(mockedEngineUpdate).toHaveBeenCalledTimes(1);
+    expect(mockedEngineUpdate).toHaveBeenCalledWith(node.id, { capacity: 20 });
     expect(capacity()).toBe(20);
   });
 
@@ -80,12 +87,12 @@ describe('typed number commits', () => {
     const { container } = render(Inspector);
     const input = capacityInput(container);
     const before = capacity();
-    mockedInvoke.mockClear();
+    mockedEngineUpdate.mockClear();
 
     await fireEvent.change(input, { target: { value: '' } });
     await tick();
 
-    expect(mockedInvoke).not.toHaveBeenCalled();
+    expect(mockedEngineUpdate).not.toHaveBeenCalled();
     expect(capacity()).toBe(before);
     // The box shows what the engine has, not what was typed: an empty
     // field that stayed empty would read as a value of "".
@@ -95,15 +102,15 @@ describe('typed number commits', () => {
   it('does not write non-numeric text', async () => {
     const { container } = render(Inspector);
     const before = capacity();
-    mockedInvoke.mockClear();
+    mockedEngineUpdate.mockClear();
 
     // jsdom may keep "abc" or sanitise it to "" depending on how much of
     // the number-input sanitization it implements; both readings must end
-    // in the same place -- no IPC, store untouched.
+    // in the same place -- no engine write, store untouched.
     await fireEvent.change(capacityInput(container), { target: { value: 'abc' } });
     await tick();
 
-    expect(mockedInvoke).not.toHaveBeenCalled();
+    expect(mockedEngineUpdate).not.toHaveBeenCalled();
     expect(capacity()).toBe(before);
     expect(capacityInput(container).value).toBe(String(before));
   });
@@ -111,18 +118,15 @@ describe('typed number commits', () => {
   it('clamps an out-of-range number to the field\'s own max, not to null', async () => {
     const { container } = render(Inspector);
     const spec = specFor('service', 'capacity') as RangeFieldSpec;
-    mockedInvoke.mockClear();
+    mockedEngineUpdate.mockClear();
 
     await fireEvent.change(capacityInput(container), {
       target: { value: String(spec.max + 999) },
     });
     await tick();
 
-    // What reaches Rust is the in-range number; nothing arrives as null.
-    expect(mockedInvoke).toHaveBeenCalledWith('sim_update_node_config', {
-      nodeId: node.id,
-      patch: { capacity: spec.max },
-    });
+    // What reaches the engine is the in-range number; nothing arrives as null.
+    expect(mockedEngineUpdate).toHaveBeenCalledWith(node.id, { capacity: spec.max });
     expect(capacity()).toBe(spec.max);
     expect(capacityInput(container).value).toBe(String(spec.max));
   });
@@ -130,15 +134,12 @@ describe('typed number commits', () => {
   it('clamps below the field\'s min too', async () => {
     const { container } = render(Inspector);
     const spec = specFor('service', 'capacity') as RangeFieldSpec;
-    mockedInvoke.mockClear();
+    mockedEngineUpdate.mockClear();
 
     await fireEvent.change(capacityInput(container), { target: { value: '-5' } });
     await tick();
 
-    expect(mockedInvoke).toHaveBeenCalledWith('sim_update_node_config', {
-      nodeId: node.id,
-      patch: { capacity: spec.min },
-    });
+    expect(mockedEngineUpdate).toHaveBeenCalledWith(node.id, { capacity: spec.min });
     expect(capacity()).toBe(spec.min);
   });
 });

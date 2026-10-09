@@ -2,11 +2,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import goldenJson from '../../../../contract/ipc-golden.json';
 
 import type {
-  ActiveFailure,
   ApiContract,
   ApiError,
   AppErrorPayload,
@@ -21,16 +19,11 @@ import type {
   EntityRelationship,
   ExportFormat,
   ExternalDependency,
-  FailureKind,
-  FailureReason,
   HighLevelArchitecture,
-  HistoryPoint,
   LowLevelDesign,
   NodeConfig,
-  NodeStats,
   Note,
   QualityAttributes,
-  RequestTrace,
   SaveResult,
   SavedDesign,
   SavedSummary,
@@ -39,13 +32,10 @@ import type {
   SequenceStep,
   SimEdge,
   SimNode,
-  SimSnapshot,
   StateMachine,
   StateTransition,
   SystemDesignDoc,
-  SystemStats,
   Topology,
-  TraceHop,
   ValidationIssue,
   Vendor,
   VendorId,
@@ -54,19 +44,6 @@ import type {
 } from '../../domain';
 import type { GlossaryEntry } from '../../components/glossary/Glossary.svelte';
 import type { PresetSummary } from '../../components/shell/Examples.svelte';
-import {
-  onSnapshot,
-  onTickError,
-  simClearFailure,
-  simGetSnapshot,
-  simInjectFailure,
-  simNew,
-  simReset,
-  simSetRunning,
-  simSetTopology,
-  simStep,
-  simUpdateNodeConfig,
-} from '../sim';
 import {
   designFileBuild,
   designFileParse,
@@ -94,14 +71,12 @@ import type { Preset } from '../presets';
 import { vendorsGet } from '../vendors';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 
 const invokeMock = vi.mocked(invoke);
-const listenMock = vi.mocked(listen);
 
 /**
  * The TypeScript half of the shared IPC contract suite -- sibling to
- * `src-tauri/src/contract_tests.rs` (12 tests), pinned against the SAME
+ * `src-tauri/src/contract_tests.rs` (11 tests), pinned against the SAME
  * golden file: `contract/ipc-golden.json`.
  *
  * WHY THIS FILE EXISTS. A command rename or a payload-key drift fails at
@@ -115,8 +90,14 @@ const listenMock = vi.mocked(listen);
  * - RUNTIME (this file, checked by CI's `bun run test`): every wrapper
  *   invokes its command with EXACTLY the `commandArgs[cmd].all` keys
  *   (undefined-valued keys never cross the wire, so `required` keys are
- *   additionally checked non-undefined); the 20 payload key sets are
- *   shape-asserted; the `listen` channels equal `events`.
+ *   additionally checked non-undefined); the 18 payload key sets are
+ *   shape-asserted; the fixture declares no `events`.
+ *
+ * NOT PINNED ANY MORE: `SimSnapshot` (and `NodeStats`, `SystemStats`, ...),
+ * the `sim_*` commands and the `sim://snapshot`/`sim://tick-error` events.
+ * The simulation engine runs in-process now (`$lib/sim/`, upstream's own
+ * `src/sim/*.ts`), driven synchronously by `$lib/state/simulation.svelte.ts`,
+ * so none of that crosses the Tauri IPC boundary.
  *
  * KNOWN, DELIBERATE GAPS (mirrored from the Rust suite's header):
  * - The four settings/layout commands have NO TS caller yet (`settings.svelte.ts`
@@ -130,7 +111,7 @@ const listenMock = vi.mocked(listen);
  *
  * Reading order: fixture loading -> type-level pins -> value-level pins ->
  * runtime helpers -> inventories -> payload shapes -> wrapper invocations
- * -> events.
+ * -> events (none).
  */
 const golden = JSON.parse(
   readFileSync(resolve(process.cwd(), 'contract/ipc-golden.json'), 'utf8'),
@@ -157,8 +138,6 @@ type Payloads = Golden['payloads'];
 
 /** First element type of a fixture array. */
 type El<T> = T extends readonly (infer U)[] ? U : never;
-/** Value union of a fixture keyed object (e.g. `simSnapshot.nodes`). */
-type Values<T> = T[keyof T];
 
 /** Keys whose property is required (`-?` strips optionality before Pick). */
 type RequiredKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? never : K }[keyof T];
@@ -184,33 +163,6 @@ type PinKeys<F, D> =
   | Exclude<RequiredKeys<D>, JsonKeys<F>>
   | Exclude<JsonKeys<F>, keyof D>;
 type Expect<T extends never> = T;
-
-// -- payloads.simSnapshot ---------------------------------------------------
-type _Pin_SimSnapshot = Expect<PinKeys<Payloads['simSnapshot'], SimSnapshot>>;
-type _Pin_SystemStats = Expect<
-  PinKeys<Payloads['simSnapshot']['system'], SystemStats>
->;
-type _Pin_NodeStats = Expect<
-  PinKeys<Values<Payloads['simSnapshot']['nodes']>, NodeStats>
->;
-type _Pin_HistoryPoint = Expect<
-  PinKeys<El<Payloads['simSnapshot']['history']>, HistoryPoint>
->;
-type _Pin_ActiveFailure = Expect<
-  PinKeys<El<Payloads['simSnapshot']['activeFailures']>, ActiveFailure>
->;
-type _Pin_RequestTrace = Expect<
-  PinKeys<Payloads['simSnapshot']['trace'], RequestTrace>
->;
-type _Pin_TraceHop = Expect<
-  PinKeys<El<Payloads['simSnapshot']['trace']['hops']>, TraceHop>
->;
-type _Pin_FailureReasons = Expect<
-  PinKeys<Payloads['simSnapshot']['failuresByReason'], Record<FailureReason, number>>
->;
-// `edgeFlow`/`edgeState` are open `Record<string, ...>` maps: their TS key
-// set is `string` by design, so no fixture key can be "missing" -- the Rust
-// roundtrip (contract_tests.rs test 7) deep-pins the value keys instead.
 
 // -- payloads.topology -----------------------------------------------------
 type _Pin_Topology = Expect<PinKeys<Payloads['topology'], Topology>>;
@@ -366,17 +318,15 @@ type _Pin_AppErrorPayload = Expect<
 // ---------------------------------------------------------------------------
 // Value-level pins.
 //
-// WHY only these six. A plain assignment from a JSON import checks value
+// WHY only these four. A plain assignment from a JSON import checks value
 // TYPES too (not just keys) -- but it compiles only for interfaces with no
 // string-literal members, because the import's string values are widened to
-// `string`. Every interface above containing a union (`FailureKind`,
+// `string`. Every interface above containing a union (`NodeKind`,
 // `TrafficPattern`, `memoryUnit`, ...) is covered by the key pins plus the
 // Rust roundtrip instead; assigning those here would fail `svelte-check`
 // for a reason unrelated to drift.
 // ---------------------------------------------------------------------------
 
-const valuePinSystem: SystemStats = golden.payloads.simSnapshot.system;
-const valuePinHistory: HistoryPoint = golden.payloads.simSnapshot.history[0];
 const valuePinIssue: ValidationIssue = golden.payloads.validationIssue[0];
 const valuePinSavedSummary: SavedSummary = golden.payloads.savedSummary[0];
 const valuePinQuality: QualityAttributes =
@@ -460,9 +410,7 @@ const PAYLOAD_NAMES = [
   'saveResultOk',
   'savedDesign',
   'savedSummary',
-  'simSnapshot',
   'systemDesignDoc',
-  'tickError',
   'topology',
   'validationIssue',
   'vendor',
@@ -470,7 +418,7 @@ const PAYLOAD_NAMES = [
 
 /**
  * The wrapper -> command table. One entry per `invoke()` site in
- * `src/lib/api/*.ts` (31 of the 35 registered commands; the other four are
+ * `src/lib/api/*.ts` (22 of the 26 registered commands; the other four are
  * `uninvokedCommands`). The completeness test below fails if a new wrapper
  * lands without an entry here, so this table cannot silently fall behind.
  */
@@ -480,27 +428,6 @@ interface WrapperCall {
 }
 
 const WRAPPER_CALLS: WrapperCall[] = [
-  // commands/sim.rs (9)
-  { command: 'sim_new', call: () => simNew(TOPOLOGY, golden.argSamples.seed) },
-  { command: 'sim_set_topology', call: () => simSetTopology(TOPOLOGY) },
-  {
-    command: 'sim_update_node_config',
-    call: () => simUpdateNodeConfig(golden.argSamples.nodeId, golden.argSamples.patch),
-  },
-  {
-    command: 'sim_inject_failure',
-    call: () =>
-      simInjectFailure(
-        golden.argSamples.nodeId,
-        golden.argSamples.kind as FailureKind,
-        golden.argSamples.opts,
-      ),
-  },
-  { command: 'sim_clear_failure', call: () => simClearFailure(golden.argSamples.nodeId) },
-  { command: 'sim_reset', call: () => simReset() },
-  { command: 'sim_step', call: () => simStep(golden.argSamples.deltaMs) },
-  { command: 'sim_set_running', call: () => simSetRunning(golden.argSamples.running) },
-  { command: 'sim_get_snapshot', call: () => simGetSnapshot() },
   // commands/designs.rs (9)
   { command: 'designs_list', call: () => designsList() },
   { command: 'designs_save', call: () => designsSave(golden.argSamples.name, TOPOLOGY) },
@@ -560,81 +487,6 @@ const WRAPPER_CALLS: WrapperCall[] = [
  * elements, which Rust cannot pin because `Annotation` is a `Value` there.
  */
 const SHAPES: { label: string; value: unknown; spec: [string, JsonKind][] }[] = [
-  {
-    label: 'payloads.simSnapshot',
-    value: golden.payloads.simSnapshot,
-    spec: [
-      ['system', 'object'],
-      ['nodes', 'object'],
-      ['history', 'array'],
-      ['edgeFlow', 'object'],
-      ['edgeState', 'object'],
-      ['failuresByReason', 'object'],
-      ['activeFailures', 'array'],
-      ['trace', 'object'],
-    ],
-  },
-  {
-    label: 'payloads.simSnapshot.system',
-    value: golden.payloads.simSnapshot.system,
-    spec: [
-      ['timeMs', 'number'],
-      ['offeredRps', 'number'],
-      ['goodputRps', 'number'],
-      ['errorRate', 'number'],
-      ['p50', 'number'],
-      ['p95', 'number'],
-      ['p99', 'number'],
-      ['totalRequests', 'number'],
-      ['totalFailed', 'number'],
-    ],
-  },
-  {
-    label: 'payloads.simSnapshot.history[0]',
-    value: golden.payloads.simSnapshot.history[0],
-    spec: [
-      ['t', 'number'],
-      ['p50', 'number'],
-      ['p95', 'number'],
-      ['p99', 'number'],
-      ['goodput', 'number'],
-      ['offered', 'number'],
-      ['errorRate', 'number'],
-    ],
-  },
-  {
-    label: 'payloads.simSnapshot.trace',
-    value: golden.payloads.simSnapshot.trace,
-    spec: [
-      ['startMs', 'number'],
-      ['totalMs', 'number'],
-      ['ok', 'boolean'],
-      ['reason', 'string'],
-      ['hops', 'array'],
-    ],
-  },
-  {
-    label: 'payloads.simSnapshot.trace.hops[0]',
-    value: golden.payloads.simSnapshot.trace.hops[0],
-    spec: [
-      ['nodeId', 'string'],
-      ['depth', 'number'],
-      ['queuedMs', 'number'],
-      ['serviceMs', 'number'],
-    ],
-  },
-  {
-    label: 'payloads.simSnapshot.activeFailures[0]',
-    value: golden.payloads.simSnapshot.activeFailures[0],
-    spec: [
-      ['nodeId', 'string'],
-      ['kind', 'string'],
-      ['sinceMs', 'number'],
-      ['factor', 'number'],
-      ['rate', 'number'],
-      ['edgeIds', 'array'],
-    ],
-  },
   {
     label: 'payloads.topology',
     value: golden.payloads.topology,
@@ -785,15 +637,12 @@ const SHAPES: { label: string; value: unknown; spec: [string, JsonKind][] }[] = 
   },
   { label: 'payloads.challengeStart.challenge.goals[0]', value: golden.payloads.challengeStart.challenge.goals[0], spec: [['metric', 'string'], ['max', 'number']] },
   { label: 'payloads.appErrorPayload', value: golden.payloads.appErrorPayload, spec: [['kind', 'string'], ['message', 'string']] },
-  { label: 'payloads.tickError', value: golden.payloads.tickError, spec: [['message', 'string']] },
 ];
 
 describe('IPC contract against contract/ipc-golden.json', () => {
   beforeEach(() => {
     invokeMock.mockReset();
-    listenMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
-    listenMock.mockResolvedValue(() => {});
   });
 
   describe('the fixture itself is internally consistent', () => {
@@ -821,8 +670,6 @@ describe('IPC contract against contract/ipc-golden.json', () => {
     });
 
     it('value-level pins reference the fixture instances themselves', () => {
-      expect(valuePinSystem).toBe(golden.payloads.simSnapshot.system);
-      expect(valuePinHistory).toBe(golden.payloads.simSnapshot.history[0]);
       expect(valuePinIssue).toBe(golden.payloads.validationIssue[0]);
       expect(valuePinSavedSummary).toBe(golden.payloads.savedSummary[0]);
       expect(valuePinQuality).toBe(
@@ -881,34 +728,14 @@ describe('IPC contract against contract/ipc-golden.json', () => {
   });
 
   describe('event channels', () => {
-    it('subscribes to exactly the channels the fixture declares', async () => {
-      await onSnapshot(() => {});
-      await onTickError(() => {});
-
-      expect(listenMock.mock.calls.map((call) => call[0]).sort()).toEqual(
-        Object.keys(golden.events).sort(),
-      );
-      expect(listenMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('delivers the fixture payloads through the subscription callbacks', async () => {
-      const snapshots = vi.fn();
-      const tickErrors = vi.fn();
-      await onSnapshot(snapshots);
-      await onTickError(tickErrors);
-
-      const snapshotHandler = listenMock.mock.calls[0][1] as unknown as (event: {
-        payload: unknown;
-      }) => void;
-      const tickErrorHandler = listenMock.mock.calls[1][1] as unknown as (event: {
-        payload: unknown;
-      }) => void;
-
-      snapshotHandler({ payload: golden.payloads.simSnapshot });
-      tickErrorHandler({ payload: golden.payloads.tickError });
-
-      expect(snapshots).toHaveBeenCalledWith(golden.payloads.simSnapshot);
-      expect(tickErrors).toHaveBeenCalledWith(golden.payloads.tickError.message);
+    // WHY: the only Rust-emitted channels were `sim://snapshot` and
+    // `sim://tick-error`, fed by the Rust engine's tick thread. The engine
+    // now runs in-process (`$lib/sim/`), so nothing is emitted and nothing
+    // in `src/lib/api/` subscribes -- the Rust suite's `listen()` scan
+    // (contract_tests.rs test 3) pins the TS side of that against this same
+    // empty map. A new channel must add its fixture entry first.
+    it('declares no event channels', () => {
+      expect(Object.keys(golden.events)).toEqual([]);
     });
   });
 });

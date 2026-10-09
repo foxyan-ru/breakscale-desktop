@@ -278,14 +278,27 @@
   }
 
   /* ---- live data ---------------------------------------------------------
-   * Every Tauri `sim://snapshot` event hands the frontend a freshly
-   * deserialised `SimSnapshot` (unlike the web app's engine, which returns
-   * the SAME mutated `history`/`failuresByReason` object on every snapshot).
-   * That is precisely the problem Metrics.tsx's own comments work around
-   * with extra memo-dependency plumbing -- `history`/`failuresByReason` are
-   * genuinely new objects here every tick, so plain `$derived` on
-   * `simulationStore.snapshot` already recomputes correctly with none of
-   * that workaround needed.
+   * The engine now runs in-process (see `$lib/state/simulation.svelte.ts`'s
+   * header), same as the web app's: `history` and `failuresByReason` are
+   * the SAME object across snapshots, mutated in place every tick (engine
+   * perf optimisation -- see `$lib/sim/engine.ts`'s own `snapshot()`
+   * comment). This USED TO say the opposite, back when every snapshot
+   * crossed Tauri IPC as a freshly deserialised object -- that was never
+   * true upstream and isn't true here anymore either.
+   *
+   * This means a `$derived` computed FROM `failuresByReason` alone (nothing
+   * here does, currently) would silently stop updating: Svelte's `$derived`
+   * skips notifying dependents when its result is referentially unchanged
+   * (https://svelte.dev/docs/svelte/$derived), and `failuresByReason`'s
+   * object identity never changes. The one place that reads it below (the
+   * rate-conversion effect) stays correct only because it ALSO reads
+   * `system?.timeMs`, which IS a fresh value every tick and so keeps the
+   * effect re-running regardless -- reading the mutated-in-place
+   * `failuresByReason` on each of those runs still gets the current
+   * counts. Don't remove that `system?.timeMs` read without replacing it
+   * with some other always-changing dependency (e.g. depending on
+   * `snapshot` itself, as `Canvas.svelte`'s `backlogs` does), or this
+   * effect stops updating too.
    * ------------------------------------------------------------------- */
 
   const snapshot = $derived(simulationStore.snapshot);

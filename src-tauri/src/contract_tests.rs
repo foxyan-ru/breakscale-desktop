@@ -1,7 +1,7 @@
 //! The Rust half of the shared IPC contract suite.
 //!
 //! WHY THIS FILE EXISTS. The frontend and this crate must agree on three
-//! things for every one of the 35 registered commands: the command NAME,
+//! things for every one of the 26 registered commands: the command NAME,
 //! the set of argument keys in the payload, and the key set of whatever
 //! payload comes back. A rename on either side that the other does not
 //! follow fails at runtime with an opaque "command not found" or a serde
@@ -11,19 +11,21 @@
 //! TypeScript side against the same bytes, so a drift on either side turns
 //! CI red at the change, not in a student's session.
 //!
-//! WHAT RUNS HERE (12 tests, all read-only against sources/data except
+//! WHAT RUNS HERE (11 tests, all read-only against sources/data except
 //! three temp files in the OS temp dir, removed on success):
 //!
 //! 1. `lib.rs`'s `generate_handler![...]` table == fixture `commands`.
 //! 2. The `invoke('name', ...)` calls in `src/lib/api/*.ts` ==
 //!    `commands` minus `uninvokedCommands`.
-//! 3. The `listen('channel', ...)` calls == fixture `events` keys.
+//! 3. The `listen('channel', ...)` calls == fixture `events` keys (today
+//!    none: the engine runs in the webview, so no Rust-emitted channels
+//!    exist -- this keeps a stray `listen()` from landing unpinned).
 //! 4. Payload inventory closure: `commandReturns` + `events` +
 //!    `freePayloads` == `payloads` keys; `freePayloads` == the two known
 //!    free shapes.
 //! 5. Every `#[tauri::command]` signature scanned from source == its
 //!    `commandArgs` entry (both `all` and `required`), both directions.
-//! 6. Declared `pub` fields of every wire struct (43 canonical + 3 union
+//! 6. Declared `pub` fields of every wire struct (35 canonical + 3 union
 //!    result types) == the fixture instance key sets, both directions.
 //! 7. Deserialize roundtrips of every canonical payload instance:
 //!    fixture -> typed -> fixture, compared key-for-key (strings/bools/
@@ -33,25 +35,30 @@
 //!    constructors (`SaveResult::ok/err`, `DesignParseResult::ok/err`,
 //!    `BackupResult::ok/err`, `AppError::Validation`, ... ) serialize to
 //!    exactly their fixture branch.
-//! 9. `failuresByReason` keys == serialized `ALL_FAILURE_REASONS`.
-//! 10. Every `argSamples` value deserializes into its command's argument
-//!     type.
-//! 11. The 13 commands that take no `AppHandle`/`State` are actually
-//!     CALLED against the fixture data, and their live returns are shape-
-//!     checked against the fixture payloads (key subset, plus source-
-//!     verified identifier spot-checks only -- fixture VALUES are
-//!     illustrative samples, see the fixture `$comment`).
-//! 12. All 35 commands are pinned as exact fn-pointer signatures, so a
+//! 9. Every `argSamples` value deserializes into its command's argument
+//!    type.
+//! 10. The 13 commands that take no `AppHandle` are actually CALLED
+//!     against the fixture data, and their live returns are shape-checked
+//!     against the fixture payloads (key subset, plus source-verified
+//!     identifier spot-checks only -- fixture VALUES are illustrative
+//!     samples, see the fixture `$comment`).
+//! 11. All 26 commands are pinned as exact fn-pointer signatures, so a
 //!     parameter added/removed/retyped anywhere breaks compilation here
-//!     even for the 22 commands that need Tauri-managed state and so
-//!     cannot be called headlessly.
+//!     even for the 13 commands that need an `AppHandle` and so cannot be
+//!     called headlessly.
+//!
+//! NOT PINNED HERE ANY MORE: `SimSnapshot` and its parts (`NodeStats`,
+//! `SystemStats`, ...), `FailureKind`/`FailureOpts` and the
+//! `sim://snapshot`/`sim://tick-error` events. The `sim_*` commands and
+//! the Rust engine that emitted those were removed when the engine moved
+//! into the webview (`desktop/src/lib/sim/`), so none of them crosses the
+//! IPC boundary any more.
 //!
 //! KNOWN, DELIBERATE GAPS (also reported in the suite's final inventory):
 //! - `Annotation` is `serde_json::Value` on the Rust side (types.rs), so
 //!   note/section annotation keys are pinned by the TS suite only; Rust
 //!   pins them indirectly via the `Topology` roundtrip.
-//! - Enum VARIANT enumeration is pinned for `FailureReason` (test 9);
-//!   other enums are pinned through their fixture instances only.
+//! - Enum VARIANTS are pinned through their fixture instances only.
 //! - Optionality (`?` vs required) is pinned as `commandArgs.required`
 //!   from the Rust signature, which is the side Tauri actually enforces.
 //!
@@ -289,7 +296,7 @@ fn find_sub(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 
 fn classify_params(params: &str) -> (Vec<String>, Vec<String>) {
     // Split on top-level commas; track (), <>, [] so a parameter type like
-    // `State<'_, SimulationState>` or `Option<Vec<String>>` stays in one
+    // `State<'_, SomeState>` or `Option<Vec<String>>` stays in one
     // part. Every tracked character is appended to the buffer (an earlier
     // draft dropped them, which glued `State<` onto the next parameter).
     let mut parts: Vec<String> = Vec::new();
@@ -352,7 +359,7 @@ fn classify_params(params: &str) -> (Vec<String>, Vec<String>) {
 
 /// One TypeScript call site name (`invoke('x', ...)` or `listen('x', ...)`)
 /// per line. Line comments are stripped quote-aware (an event channel like
-/// `'sim://snapshot'` contains `//`, so a naive split would truncate the
+/// `'scheme://name'` contains `//`, so a naive split would truncate the
 /// literal before its closing quote and lose the channel) and block-comment
 /// continuation lines are skipped, so doc comments that merely MENTION
 /// `invoke()` cannot register as call sites.
@@ -419,8 +426,8 @@ fn is_ident_byte(b: u8) -> bool {
 }
 
 /// Drop a trailing `//` line comment, keeping `//` that occurs INSIDE
-/// string literals: `sim://snapshot` / `sim://tick-error` are scanned as
-/// first string arguments, and splitting on `//` before the closing quote
+/// string literals: an event channel such as `scheme://name` is scanned as
+/// a first string argument, and splitting on `//` before the closing quote
 /// would leave the extract unterminated and report the channel missing.
 /// The `..i` slice is always on an ASCII boundary: `i` points at the first
 /// byte of `//`, and no UTF-8 continuation byte can equal `/`.
@@ -484,22 +491,16 @@ fn collect_ts(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// The 43 wire structs that have a fully-populated canonical fixture
+/// The 35 wire structs that have a fully-populated canonical fixture
 /// instance: (source file relative to `src/`, struct name, fixture path).
 /// `DesignFile` (the on-disk `.breakscale` body) is deliberately absent --
-/// it never crosses the IPC wire.
+/// it never crosses the IPC wire. So are `SimSnapshot` and its parts: they
+/// stopped crossing it when the engine moved into the webview.
 const CANON: &[(&str, &str, &[&str])] = &[
     ("sim/types.rs", "NodeConfig", &["payloads", "topology", "nodes", "[0]", "config"]),
     ("sim/types.rs", "SimNode", &["payloads", "topology", "nodes", "[0]"]),
     ("sim/types.rs", "SimEdge", &["payloads", "topology", "edges", "[0]"]),
     ("sim/types.rs", "Topology", &["payloads", "topology"]),
-    ("sim/types.rs", "NodeStats", &["payloads", "simSnapshot", "nodes", "client-1"]),
-    ("sim/types.rs", "SystemStats", &["payloads", "simSnapshot", "system"]),
-    ("sim/types.rs", "HistoryPoint", &["payloads", "simSnapshot", "history", "[0]"]),
-    ("sim/types.rs", "ActiveFailure", &["payloads", "simSnapshot", "activeFailures", "[0]"]),
-    ("sim/types.rs", "RequestTrace", &["payloads", "simSnapshot", "trace"]),
-    ("sim/types.rs", "TraceHop", &["payloads", "simSnapshot", "trace", "hops", "[0]"]),
-    ("sim/types.rs", "SimSnapshot", &["payloads", "simSnapshot"]),
     ("sysdesign/model.rs", "SystemDesignDoc", &["payloads", "systemDesignDoc"]),
     ("sysdesign/model.rs", "HighLevelArchitecture", &["payloads", "systemDesignDoc", "architecture"]),
     ("sysdesign/model.rs", "ComponentNote", &["payloads", "systemDesignDoc", "architecture", "components", "[0]"]),
@@ -699,8 +700,11 @@ fn typescript_invokes_exactly_the_non_state_commands() {
 }
 
 /// WHY: `listen` channels are strings the Rust side emits; a channel
-/// rename on either side silently stops snapshots from arriving. The two
-/// channels are pinned here against the same fixture the TS suite checks.
+/// rename on either side silently stops events from arriving. The fixture
+/// currently declares NO channels (the `sim://snapshot`/`sim://tick-error`
+/// pair went away with the Rust engine), so this pins that `src/lib/api/`
+/// subscribes to nothing -- a new `listen()` must land together with its
+/// fixture `events` entry and the Rust `emit` that feeds it.
 #[test]
 fn typescript_listens_to_exactly_the_fixture_events() {
     let g = golden();
@@ -794,7 +798,6 @@ fn every_command_signature_matches_its_fixture_argument_keys() {
         "glossary.rs",
         "presets.rs",
         "settings.rs",
-        "sim.rs",
         "sysdesign.rs",
         "vendors.rs",
     ];
@@ -851,7 +854,7 @@ fn every_command_signature_matches_its_fixture_argument_keys() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Declared fields vs fixture instances (43 canonical + 3 unions)
+// 6. Declared fields vs fixture instances (35 canonical + 3 unions)
 // ---------------------------------------------------------------------------
 
 /// WHY: serde emits exactly the declared fields, so a struct gaining or
@@ -899,9 +902,7 @@ fn every_declared_wire_struct_matches_its_fixture_instance_keys() {
 /// serde's camelCase renaming and its `skip_serializing_if` optionals are
 /// exactly where that goes wrong. Fixture -> typed -> fixture must be
 /// key-identical (numbers aside, which f64 normalisation legitimately
-/// rewrites). `SimSnapshot` is Serialize-only (no inbound path), so its
-/// shape is pinned by the declared-field test above plus the nested
-/// roundtrips of NodeStats/SystemStats/history/trace here.
+/// rewrites).
 #[test]
 fn canonical_payload_instances_round_trip_key_stably() {
     let g = golden();
@@ -921,30 +922,6 @@ fn canonical_payload_instances_round_trip_key_stably() {
     assert_roundtrip::<crate::sim::types::SimEdge>(
         g_at(&g, &["payloads", "topology", "edges", "[0]"]),
         "SimEdge",
-    );
-    assert_roundtrip::<crate::sim::types::NodeStats>(
-        g_at(&g, &["payloads", "simSnapshot", "nodes", "client-1"]),
-        "NodeStats",
-    );
-    assert_roundtrip::<crate::sim::types::SystemStats>(
-        g_at(&g, &["payloads", "simSnapshot", "system"]),
-        "SystemStats",
-    );
-    assert_roundtrip::<crate::sim::types::HistoryPoint>(
-        g_at(&g, &["payloads", "simSnapshot", "history", "[0]"]),
-        "HistoryPoint",
-    );
-    assert_roundtrip::<crate::sim::types::ActiveFailure>(
-        g_at(&g, &["payloads", "simSnapshot", "activeFailures", "[0]"]),
-        "ActiveFailure",
-    );
-    assert_roundtrip::<crate::sim::types::RequestTrace>(
-        g_at(&g, &["payloads", "simSnapshot", "trace"]),
-        "RequestTrace",
-    );
-    assert_roundtrip::<crate::sim::types::TraceHop>(
-        g_at(&g, &["payloads", "simSnapshot", "trace", "hops", "[0]"]),
-        "TraceHop",
     );
     assert_roundtrip::<crate::sysdesign::model::SystemDesignDoc>(
         g_at(&g, &["payloads", "systemDesignDoc"]),
@@ -1159,36 +1136,7 @@ fn summary_src_path<'v>(g: &'v Value, key: &str) -> &'v Value {
 }
 
 // ---------------------------------------------------------------------------
-// 9. FailureReason enum enumeration
-// ---------------------------------------------------------------------------
-
-/// WHY: `failuresByReason` is a fixed-shape counter object -- the TS type
-/// declares every reason as a required key. Enumerating Rust's
-/// `ALL_FAILURE_REASONS` and comparing to the fixture's key set is the
-/// only test that would catch a NEW failure reason (or a renamed kebab-case
-/// spelling) that no fixture instance happens to contain.
-#[test]
-fn failures_by_reason_keys_match_the_rust_enum() {
-    use crate::sim::types::ALL_FAILURE_REASONS;
-    let g = golden();
-    let mut from_rust: BTreeSet<String> = BTreeSet::new();
-    for reason in ALL_FAILURE_REASONS.iter() {
-        let name = serde_json::to_value(reason)
-            .expect("FailureReason serializes")
-            .as_str()
-            .expect("FailureReason serializes as a string")
-            .to_string();
-        from_rust.insert(name);
-    }
-    let fixture = keys_of(
-        g_at(&g, &["payloads", "simSnapshot", "failuresByReason"]),
-        "failuresByReason",
-    );
-    assert_set_eq("ALL_FAILURE_REASONS vs fixture failuresByReason", &from_rust, &fixture);
-}
-
-// ---------------------------------------------------------------------------
-// 10. argSamples -> argument types
+// 9. argSamples -> argument types
 // ---------------------------------------------------------------------------
 
 /// WHY: every sample the TS suite sends through a mocked `invoke` must be
@@ -1197,32 +1145,11 @@ fn failures_by_reason_keys_match_the_rust_enum() {
 /// sample into its exact command parameter type.
 #[test]
 fn argument_samples_deserialize_into_their_command_types() {
-    use crate::sim::types::{FailureKind, FailureOpts};
     use crate::sysdesign::model::ExportFormat;
     use crate::vendors::types::VendorId;
 
     let g = golden();
     let samples = g_at(&g, &["argSamples"]);
-
-    let kind: FailureKind =
-        serde_json::from_value(samples["kind"].clone()).expect("kind -> FailureKind");
-    assert_eq!(kind, FailureKind::Slow, "sample kind is the 'slow' variant");
-
-    let opts: FailureOpts =
-        serde_json::from_value(samples["opts"].clone()).expect("opts -> FailureOpts");
-    assert_eq!(opts.factor, Some(3.0), "opts.factor");
-    assert_eq!(opts.rate, Some(0.1), "opts.rate");
-    assert_eq!(
-        opts.edge_ids,
-        Some(vec!["edge-1".to_string()]),
-        "opts.edgeIds"
-    );
-    let opts_back = serde_json::to_value(&opts).expect("FailureOpts serializes");
-    assert_set_eq(
-        "FailureOpts roundtrip keys",
-        &keys_of(&opts_back, "FailureOpts"),
-        &keys_of(&samples["opts"], "argSamples.opts"),
-    );
 
     let format: ExportFormat =
         serde_json::from_value(samples["format"].clone()).expect("format -> ExportFormat");
@@ -1232,20 +1159,11 @@ fn argument_samples_deserialize_into_their_command_types() {
         serde_json::from_value(samples["vendorId"].clone()).expect("vendorId -> VendorId");
     assert_eq!(vendor, VendorId::Aws);
 
-    for key in ["nodeId", "id", "name", "path", "text", "designId"] {
+    for key in ["id", "name", "path", "text", "designId"] {
         serde_json::from_value::<String>(samples[key].clone())
             .unwrap_or_else(|e| panic!("argSamples.{key} must deserialize as a String: {e}"));
     }
-    assert_eq!(
-        serde_json::from_value::<u32>(samples["seed"].clone()).expect("seed -> u32"),
-        7
-    );
-    assert_eq!(
-        serde_json::from_value::<f64>(samples["deltaMs"].clone()).expect("deltaMs -> f64"),
-        250.0
-    );
-    assert!(serde_json::from_value::<bool>(samples["running"].clone()).expect("running -> bool"));
-    for key in ["patch", "preferences", "layout"] {
+    for key in ["preferences", "layout"] {
         let v: Value = serde_json::from_value(samples[key].clone())
             .unwrap_or_else(|e| panic!("argSamples.{key} must deserialize as JSON: {e}"));
         assert!(v.is_object(), "argSamples.{key} is an object argument");
@@ -1253,18 +1171,18 @@ fn argument_samples_deserialize_into_their_command_types() {
 }
 
 // ---------------------------------------------------------------------------
-// 11. Live invocations of the 13 headless commands
+// 10. Live invocations of the 13 headless commands
 // ---------------------------------------------------------------------------
 
 /// WHY: key sets alone cannot prove the wiring actually runs -- that
 /// `glossary_list` really reads the embedded data, that a `.breakscale`
 /// file survives a build -> parse roundtrip, that the validator still
 /// reports the fixture document's two source-verifiable problems. These 13
-/// commands need no Tauri-managed state, so they are called for real and
+/// commands need no `AppHandle`, so they are called for real and
 /// shape-checked against the fixture (subset, since fixture VALUES are
 /// illustrative -- see the fixture `$comment`; only stable identifiers are
-/// value-compared). The 22 state-bound commands are signature-pinned in
-/// the next test instead.
+/// value-compared). The 13 `AppHandle`-bound commands are signature-pinned
+/// in the next test instead.
 #[test]
 fn headless_commands_serve_payloads_shaped_like_the_fixture() {
     use crate::sim::glossary::GlossaryCategory;
@@ -1515,11 +1433,11 @@ fn headless_commands_serve_payloads_shaped_like_the_fixture() {
 }
 
 // ---------------------------------------------------------------------------
-// 12. Fn-pointer signature pins for all 35 commands
+// 11. Fn-pointer signature pins for all 26 commands
 // ---------------------------------------------------------------------------
 
-/// WHY: 22 commands take an `AppHandle` or managed `State` and therefore
-/// cannot be called headlessly -- but their WIRE contract (parameter names
+/// WHY: 13 commands take an `AppHandle` and therefore cannot be called
+/// headlessly -- but their WIRE contract (parameter names
 /// and types Tauri reflects into the payload) can still be pinned at
 /// compile time by coercing each command to an exact fn-pointer type. A
 /// parameter added, removed, or retyped (including its `Option`-ness)
@@ -1528,33 +1446,12 @@ fn headless_commands_serve_payloads_shaped_like_the_fixture() {
 #[test]
 fn every_command_is_pinnable_as_its_exact_rust_signature() {
     use crate::error::AppResult;
-    use crate::sim::types::{FailureKind, FailureOpts, SimSnapshot, Topology};
-    use crate::state::SimulationState;
+    use crate::sim::types::Topology;
     use serde_json::Value;
-    use tauri::{AppHandle, State};
+    use tauri::AppHandle;
 
-    // ---- commands/sim.rs (9) ----
-    // WHY: seed/deltaMs are the optional params the fixture pins as
-    // non-required; AppHandle/State must stay first when present because
-    // Tauri injects them positionally.
-    let _: for<'a> fn(AppHandle, State<'a, SimulationState>, Topology, Option<u32>) -> AppResult<()>
-        = crate::commands::sim::sim_new;
-    let _: for<'a> fn(State<'a, SimulationState>, Topology) -> AppResult<()> =
-        crate::commands::sim::sim_set_topology;
-    let _: for<'a> fn(State<'a, SimulationState>, String, Value) -> AppResult<()> =
-        crate::commands::sim::sim_update_node_config;
-    let _: for<'a> fn(State<'a, SimulationState>, String, FailureKind, FailureOpts) -> AppResult<()>
-        = crate::commands::sim::sim_inject_failure;
-    let _: for<'a> fn(State<'a, SimulationState>, String) -> AppResult<()> =
-        crate::commands::sim::sim_clear_failure;
-    let _: for<'a> fn(State<'a, SimulationState>) -> AppResult<()> =
-        crate::commands::sim::sim_reset;
-    let _: for<'a> fn(AppHandle, State<'a, SimulationState>, Option<f64>) -> AppResult<()> =
-        crate::commands::sim::sim_step;
-    let _: for<'a> fn(State<'a, SimulationState>, bool) -> AppResult<()> =
-        crate::commands::sim::sim_set_running;
-    let _: for<'a> fn(State<'a, SimulationState>) -> AppResult<SimSnapshot> =
-        crate::commands::sim::sim_get_snapshot;
+    // WHY: `AppHandle` must stay first when present because Tauri injects
+    // it positionally.
 
     // ---- commands/designs.rs (9) ----
     let _: fn(AppHandle) -> AppResult<Vec<crate::persistence::saved_designs::SavedSummary>> =

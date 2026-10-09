@@ -21,7 +21,8 @@ use super::model::{
     QualityAttributes, SequenceFlow, SequenceStep, SystemDesignDoc,
 };
 
-/// Hop-depth guard mirroring `sim::engine`'s `MAX_HOP_DEPTH`: a topology can
+/// Hop-depth guard mirroring the engine's `MAX_HOP_DEPTH` (`engine.ts:33`,
+/// now run in the webview from `desktop/src/lib/sim/`): a topology can
 /// contain a routing cycle (a mis-wired loop back to an earlier node), and a
 /// pure graph walk has no other reason to terminate. The engine bounds a
 /// live request's hop count for the same reason -- see `SimEdge.control`'s

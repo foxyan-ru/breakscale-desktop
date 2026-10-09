@@ -6,7 +6,6 @@
 
 import type { AppErrorPayload } from '$lib/domain';
 
-export * from './sim';
 export * from './designs';
 export * from './backup';
 export * from './sysdesign';

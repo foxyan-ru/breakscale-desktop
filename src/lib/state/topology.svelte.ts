@@ -1,14 +1,17 @@
 ﻿/**
  * Svelte 5 rune store for the current `Topology` plus canvas selection.
  *
- * Every mutation function updates the local `$state` optimistically, then
- * calls the matching `api/sim.ts` function to keep the Rust engine in sync.
- * The sync call is fire-and-forget: failures are routed into
- * `uiStore.errors` via `pushError` rather than left as an unhandled promise
- * rejection, and the local state is NOT rolled back on failure (the engine
- * call is a best-effort mirror; `simSetTopology`/`simNew` on the next full
- * sync is what actually reconciles it).
+ * Every mutation function updates the local `$state`, then calls the
+ * matching `state/simulation.svelte.ts` function to keep the (in-process)
+ * engine in sync. WHY THIS USED TO BE ASYNC WITH A `.catch()` ON EVERY
+ * CALL, AND ISN'T ANYMORE: the engine lived in a Rust process reached over
+ * Tauri IPC, so every sync was a fallible round trip that needed its own
+ * error-reporting path (`reportSyncFailure`, routed into `uiStore.errors`).
+ * The engine is in-process TypeScript now (see `state/simulation.svelte.ts`'s
+ * header comment) -- `simSetTopology` etc. are plain synchronous function
+ * calls with no IPC failure mode, so there is nothing left to catch.
  *
+
  * SELECTION MODEL. `selectedIds` is the one selection model for the whole
  * canvas: node ids, edge ids and annotation ids all live together in one
  * set, exactly like the web app's `ReadonlySet<string> selectedIds`
@@ -27,9 +30,10 @@
  */
 
 import { SvelteSet } from 'svelte/reactivity';
-import { simSetTopology, simUpdateNodeConfig } from '$lib/api/sim';
-import { isAppError } from '$lib/api';
-import { pushError } from './ui.svelte';
+import {
+  simSetTopology as engineSetTopology,
+  simUpdateNodeConfig as engineUpdateNodeConfig,
+} from './simulation.svelte';
 import type { NodeConfig, SimEdge, SimNode, Topology } from '$lib/domain';
 
 interface TopologyState {
@@ -61,16 +65,11 @@ function createTopologyStore() {
 
 export const topologyStore = createTopologyStore();
 
-function reportSyncFailure(action: string, e: unknown): void {
-  const message = isAppError(e) ? e.message : e instanceof Error ? e.message : String(e);
-  pushError(`${action} failed to reach the simulation engine: ${message}`);
-}
-
-/** Replace the whole topology (e.g. loading a design) and push it to Rust. */
+/** Replace the whole topology (e.g. loading a design) and push it to the engine. */
 export function setTopology(topology: Topology): void {
   topologyStore.topology = topology;
   topologyStore.selectedIds.clear();
-  simSetTopology(topology).catch((e) => reportSyncFailure('Loading the design', e));
+  engineSetTopology(topology);
 }
 
 /** Add a node to the topology. */
@@ -80,7 +79,7 @@ export function addNode(node: SimNode): void {
     nodes: [...topologyStore.topology.nodes, node],
   };
   topologyStore.topology = next;
-  simSetTopology(next).catch((e) => reportSyncFailure('Adding the component', e));
+  engineSetTopology(next);
 }
 
 /** Merge `patch` into one node's config. */
@@ -91,9 +90,7 @@ export function updateNodeConfig(nodeId: string, patch: Partial<NodeConfig>): vo
       n.id === nodeId ? { ...n, config: { ...n.config, ...patch } } : n,
     ),
   };
-  simUpdateNodeConfig(nodeId, patch).catch((e) =>
-    reportSyncFailure('Updating the component', e),
-  );
+  engineUpdateNodeConfig(nodeId, patch);
 }
 
 /**
@@ -113,7 +110,7 @@ export function renameNode(nodeId: string, label: string): void {
     nodes: topologyStore.topology.nodes.map((n) => (n.id === nodeId ? { ...n, label } : n)),
   };
   topologyStore.topology = next;
-  simSetTopology(next).catch((e) => reportSyncFailure('Renaming the component', e));
+  engineSetTopology(next);
 }
 
 /**
@@ -131,7 +128,7 @@ export function moveNode(nodeId: string, x: number, y: number): void {
     nodes: topologyStore.topology.nodes.map((n) => (n.id === nodeId ? { ...n, x, y } : n)),
   };
   topologyStore.topology = next;
-  simSetTopology(next).catch((e) => reportSyncFailure('Moving the component', e));
+  engineSetTopology(next);
 }
 
 /** Remove a node and every edge touching it. */
@@ -147,7 +144,7 @@ export function removeNode(nodeId: string): void {
   for (const e of topology.edges) {
     if (e.from === nodeId || e.to === nodeId) topologyStore.selectedIds.delete(e.id);
   }
-  simSetTopology(next).catch((e) => reportSyncFailure('Removing the component', e));
+  engineSetTopology(next);
 }
 
 /** Wire a new edge. */
@@ -157,7 +154,7 @@ export function addEdge(edge: SimEdge): void {
     edges: [...topologyStore.topology.edges, edge],
   };
   topologyStore.topology = next;
-  simSetTopology(next).catch((e) => reportSyncFailure('Adding the connection', e));
+  engineSetTopology(next);
 }
 
 /** Remove an edge. */
@@ -169,7 +166,7 @@ export function removeEdge(edgeId: string): void {
   };
   topologyStore.topology = next;
   topologyStore.selectedIds.delete(edgeId);
-  simSetTopology(next).catch((e) => reportSyncFailure('Removing the connection', e));
+  engineSetTopology(next);
 }
 
 /**
@@ -198,7 +195,7 @@ export function removeSelection(nodeIds: readonly string[], edgeIds: readonly st
   topologyStore.topology = next;
   for (const id of nodeIds) topologyStore.selectedIds.delete(id);
   for (const id of edgeIds) topologyStore.selectedIds.delete(id);
-  simSetTopology(next).catch((e) => reportSyncFailure('Removing the selection', e));
+  engineSetTopology(next);
 }
 
 /**

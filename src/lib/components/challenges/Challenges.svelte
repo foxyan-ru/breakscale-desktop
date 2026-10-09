@@ -95,7 +95,7 @@
       </header>
 
       {#if loading}
-        <p class="ex-empty">Loading challengesâ€¦</p>
+        <p class="ex-empty">Loading challenges…</p>
       {:else if challenges.length === 0}
         <p class="ex-empty">No challenges are available yet.</p>
       {:else}

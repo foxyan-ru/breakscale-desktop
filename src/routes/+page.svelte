@@ -30,12 +30,18 @@
   } from '$lib/state/topology.svelte';
   import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
   import type { HistoryEntry } from '$lib/state/history.svelte';
-  import { simulationStore, setRunning, startListening } from '$lib/state/simulation.svelte';
+  import {
+    simulationStore,
+    setRunning,
+    startSimulationLoop,
+    simNew,
+    simReset,
+    simStep,
+  } from '$lib/state/simulation.svelte';
   import { settingsStore } from '$lib/state/settings.svelte';
   import { uiStore, pushError } from '$lib/state/ui.svelte';
   import type { ActiveView } from '$lib/state/ui.svelte';
 
-  import { simNew, simReset, simStep } from '$lib/api/sim';
   import { presetsList, presetLoad } from '$lib/api/presets';
   import {
     challengesList,
@@ -680,14 +686,17 @@
     vv?.addEventListener('resize', measureBar);
     window.addEventListener('resize', measureBar);
 
-    // `src-tauri/src/lib.rs`'s `setup()` installs a default engine (the
-    // first built-in example) and starts the tick thread with it BEFORE
-    // the webview can invoke anything, so the simulation is already
-    // running by the time this component mounts -- mirror that locally so
-    // the Play/Pause button reads correctly on first paint instead of
-    // claiming paused. The bootstrap below then swaps in its own copy of
-    // the same preset, so canvas and engine stay on the same topology.
+    // The engine starts life running (matching the old Rust tick thread's
+    // default, which this mirrors so the Play/Pause button reads correctly
+    // on first paint instead of claiming paused), and the rAF loop starts
+    // here too now that `onMount`'s synchronous body is no longer silently
+    // dropped in production (see `vite.config.ts`'s `resolve.conditions`
+    // fix) -- there is no reason left to keep simulation startup in a
+    // separate `$effect`, as a previous, incomplete fix did. The bootstrap
+    // below then swaps in its own copy of the default preset, so canvas and
+    // engine stay on the same topology.
     simulationStore.running = true;
+    const stopSimulationLoop = startSimulationLoop();
 
     void (async () => {
       let fetched: Topology | null = null;
@@ -724,8 +733,9 @@
       try {
         // Whatever the canvas shows RIGHT NOW -- the fetched preset on the
         // success path, the store's own topology (possibly already edited)
-        // on the failure path -- is what the engine must hold.
-        await simNew(topologyStore.topology);
+        // on the failure path -- is what the engine must hold. Synchronous
+        // now: the engine is in-process, there is no IPC round trip to await.
+        simNew(topologyStore.topology);
       } catch (e) {
         pushError(`Starting the simulation failed: ${describeErr(e)}`);
       }
@@ -736,36 +746,7 @@
       ro?.disconnect();
       vv?.removeEventListener('resize', measureBar);
       window.removeEventListener('resize', measureBar);
-    };
-  });
-
-  // WHY A SEPARATE $effect, NOT INLINE IN THE onMount ABOVE: `startListening()`
-  // (the `sim://snapshot` / `sim://tick-error` event subscription) used to be
-  // called from this component's `onMount`, same as everything above it, but a
-  // shipped build still showed the canvas never animating after that change.
-  // Bisecting locally (`bun run build`, no CI round-trip) by placing unique
-  // `console.error` markers at different points in the compiled output proved
-  // that a Svelte-5/Vite production build of this exact `onMount` callback
-  // drops its entire synchronous body -- `window.addEventListener('keydown',
-  // ...)`, the ResizeObserver/`visualViewport` wiring, all of it -- from the
-  // emitted `_app/immutable/nodes/*.js` chunk, while a plain top-level
-  // `$effect()` elsewhere in the very same file survives untouched. (The async
-  // IIFE a few lines above, e.g. `presets_list`, also survives -- it's not
-  // that `onMount` is wholesale removed, just its synchronous prefix; not
-  // fully root-caused beyond that.) Since `startListening()` reads no
-  // reactive state, this effect has no tracked dependencies and therefore
-  // fires exactly once, right after mount, same as `onMount` was meant to --
-  // just through a code path this toolchain doesn't drop.
-  $effect(() => {
-    let cancelled = false;
-    let stop: (() => void) | undefined;
-    void startListening().then((fn) => {
-      if (cancelled) fn();
-      else stop = fn;
-    });
-    return () => {
-      cancelled = true;
-      stop?.();
+      stopSimulationLoop();
     };
   });
 
@@ -786,17 +767,18 @@
   }
 
   function handleStep(): void {
-    // Pause first, locally, so the button reflects the stopped clock at
-    // once; the command pauses again on the Rust side before advancing.
+    // Pause first so the button reflects the stopped clock, then advance
+    // one fixed step directly -- in-process now, so there is no separate
+    // pause-then-advance contract to race against a tick thread.
     if (simulationStore.running) setRunning(false);
-    simStep().catch((e) => pushError(`Stepping the simulation failed: ${describeErr(e)}`));
+    simStep();
   }
 
   function handleReset(): void {
     // Synchronously, not via the derivation effect: Reset must never leave
     // the previous run's Dropped figure standing beside a zeroed clock.
     resetLostRate();
-    simReset().catch((e) => pushError(`Resetting the simulation failed: ${describeErr(e)}`));
+    simReset();
   }
 </script>
 

@@ -1,29 +1,24 @@
-//! Pure simulation domain: the discrete-event engine and the deterministic
-//! primitives (`random`, `heap`) and shared structural types
-//! (`types`, `engine_types`) it is built from.
+//! Shared simulation DATA that the remaining Tauri commands still serve:
+//! the structural/wire types (`types`), the built-in examples (`presets`),
+//! the challenge briefs and their goal checks (`challenge`, `challenges`)
+//! and the glossary (`glossary`).
 //!
-//! Mirrors `src/sim`'s own rule, stated in this repository's AGENTS.md:
-//! "`src/sim` is a pure simulation engine with no React, no DOM and no I/O;
-//! everything else is the interface around it." Nothing in this module (or
-//! its submodules) may perform file I/O, call into Tauri, or otherwise
-//! reach outside the simulation -- that boundary is what lets the engine
-//! (ported separately, into `sim::engine`) replay byte-identically from a
-//! seed and a topology, on both sides of the port.
+//! There is no engine here any more. The discrete-event engine now runs
+//! in-process in the webview as upstream's own TypeScript (`src/sim/*.ts`,
+//! copied byte-for-byte into `desktop/src/lib/sim/`), so the Rust port of
+//! `engine.ts`, `behaviour*.ts`, `engine-types.ts`, `heap.ts` and
+//! `random.ts` -- and the `sim_*` commands and `sim://*` events that drove
+//! it over IPC -- were removed. What stays is what `presets_list`,
+//! `preset_load`, `challenges_list`, `challenge_start`, `glossary_list`,
+//! the design-file/saved-design persistence, `sysdesign` and `vendors` need
+//! to (de)serialize a `Topology` and its content.
 //!
-//! See MIGRATION_PLAN.md #4 ("Domain contract (Rust <-> TypeScript wire
-//! format)") for the full module map this crate is being built against;
-//! this file covers `types.ts`, `random.ts`, `heap.ts` and
-//! `engine-types.ts` only. `engine.ts`, `behaviour*.ts`, `annotations.ts`,
-//! `challenge*.ts` and `presets.ts` are ported separately, into sibling
-//! modules under `sim::`.
+//! Still mirrors upstream `src/sim`'s rule (this repository's AGENTS.md):
+//! pure data and logic, no file I/O, no Tauri -- the callers in `commands`
+//! and `persistence` own every side effect.
 
-pub mod behaviour;
 pub mod challenge;
 pub mod challenges;
-pub mod engine;
-pub mod engine_types;
 pub mod glossary;
-pub mod heap;
 pub mod presets;
-pub mod random;
 pub mod types;

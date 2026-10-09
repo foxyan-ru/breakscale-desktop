@@ -72,7 +72,7 @@
      it performs).
      ========================================================================== */
 
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import {
     topologyStore,
     addNode,
@@ -90,9 +90,7 @@
   import { sessionHistory, currentSnapshot } from '$lib/state/history.svelte';
   import { simulationStore } from '$lib/state/simulation.svelte';
   import { settingsStore, setSetting } from '$lib/state/settings.svelte';
-  import { simSetTopology } from '$lib/api/sim';
-  import { isAppError } from '$lib/api';
-  import { pushError } from '$lib/state/ui.svelte';
+  import { simSetTopology } from '$lib/state/simulation.svelte';
   import type {
     FailureKind,
     NodeKind,
@@ -403,7 +401,22 @@
 
   const snapshot = $derived(simulationStore.snapshot);
   const statsById = $derived(snapshot?.nodes ?? ({} as Record<string, NodeStats>));
-  const backlogs = $derived(sourceBacklogs(topology, statsById));
+  /**
+   * WHY THIS READS `snapshot` DIRECTLY, NOT `statsById`: the engine reuses
+   * the same `nodes` container across snapshots (mutating it in place --
+   * see `$lib/sim/engine.ts`'s own `snapshot()` comment), so `statsById`'s
+   * COMPUTED VALUE is referentially identical from one snapshot to the
+   * next even though the numbers inside changed. Svelte's `$derived` skips
+   * notifying downstream when its result is `Object.is`-equal to the
+   * previous one (https://svelte.dev/docs/svelte/$derived), so a `$derived`
+   * chained off `statsById` -- as this used to be -- would see "no change"
+   * on every tick and never recompute. Depending on `snapshot` itself
+   * (which IS a fresh object every publish) instead keeps this correctly
+   * tied to every tick.
+   */
+  const backlogs = $derived(
+    snapshot ? sourceBacklogs(topology, snapshot.nodes) : new Map<string, number>(),
+  );
   const faultByNode = $derived.by(() => {
     const m = new Map<string, FailureKind>();
     for (const f of snapshot?.activeFailures ?? []) m.set(f.nodeId, f.kind);
@@ -428,7 +441,19 @@
     const snap = simulationStore.snapshot;
     if (!snap || !settingsStore.sparklines) return;
     const liveIds = new Set(nodes.map((n) => n.id));
-    const next = new Map(sparkHistory);
+    // The previous buffers are read UNTRACKED: this effect writes
+    // `sparkHistory` below, and a tracked read of the same signal makes it a
+    // self-dependency -- Svelte 5 reschedules an effect that writes state it
+    // read (the `$effect(() => x++)` case in `internal/client/reactivity/
+    // sources.js`), so every run queued another until
+    // `effect_update_depth_exceeded`. It stayed latent while the snapshot
+    // arrived over IPC (null until the first event, and never in jsdom
+    // tests); with the in-process engine `startSimulationLoop` publishes one
+    // synchronously on mount, so the loop fired on first render. The web
+    // original keeps the previous map in a ref (`sparkRef`, `App.tsx:921`)
+    // for the same reason: prior samples are input, not a trigger. The
+    // triggers stay what they are there -- the snapshot and the node list.
+    const next = new Map(untrack(() => sparkHistory));
     for (const id of [...next.keys()]) if (!liveIds.has(id)) next.delete(id);
     for (const n of nodes) {
       const stats = snap.nodes[n.id];
@@ -592,26 +617,19 @@
    *
    * `topology.svelte.ts` (finished, not to be modified) has no annotation
    * mutators -- it was written before `$lib/domain/annotations.ts` existed.
-   * These helpers mirror that module's OWN pattern exactly: optimistic
-   * local update to `topologyStore.topology`, then a fire-and-forget
-   * `simSetTopology` sync routed into `pushError` on failure, never rolled
-   * back locally (the next full sync reconciles it). Reading the pattern
-   * from `topology.svelte.ts` rather than inventing a new one is
-   * deliberate, so a later agent that DOES get to extend that module can
-   * lift these functions in verbatim.
+   * These helpers mirror that module's OWN pattern: optimistic local update
+   * to `topologyStore.topology`, then a `simSetTopology` call to keep the
+   * in-process engine in sync (a plain synchronous function now -- no IPC,
+   * so no failure mode to route into `pushError` the way this used to).
+   * Reading the pattern from `topology.svelte.ts` rather than inventing a
+   * new one is deliberate, so a later agent that DOES get to extend that
+   * module can lift these functions in verbatim.
    * ------------------------------------------------------------------ */
-
-  function describeErr(e: unknown): string {
-    if (isAppError(e)) return e.message;
-    return e instanceof Error ? e.message : String(e);
-  }
 
   function commitAnnotations(next: Annotation[]): void {
     const nextTopology = { ...topologyStore.topology, annotations: next };
     topologyStore.topology = nextTopology;
-    simSetTopology(nextTopology).catch((e) =>
-      pushError(`Updating annotations failed to reach the simulation engine: ${describeErr(e)}`),
-    );
+    simSetTopology(nextTopology);
   }
 
   /**
@@ -622,8 +640,8 @@
    * but calling it N times in a row for an N-member selection would push
    * the topology N times back to back with a different number of moved
    * nodes each time. This mirrors `commitAnnotations`' own pattern --
-   * optimistic local update, then fire-and-forget sync into `pushError` --
-   * so the engine is never sent a half-moved selection.
+   * optimistic local update, then a sync call -- so the engine is never
+   * sent a half-moved selection.
    */
   function commitNodeMoves(moves: readonly { id: string; x: number; y: number }[]): void {
     if (moves.length === 0) return;
@@ -636,11 +654,7 @@
       }),
     };
     topologyStore.topology = nextTopology;
-    simSetTopology(nextTopology).catch((e) =>
-      pushError(
-        `Moving the selection failed to reach the simulation engine: ${describeErr(e)}`,
-      ),
-    );
+    simSetTopology(nextTopology);
   }
 
   function createNote(x: number, y: number): string {
@@ -1739,9 +1753,7 @@
       edges: [...topology.edges, ...clones.edges],
     };
     topologyStore.topology = next;
-    simSetTopology(next).catch((e) =>
-      pushError(`Pasting failed to reach the simulation engine: ${describeErr(e)}`),
-    );
+    simSetTopology(next);
     const ids = new Set<string>();
     for (const n of clones.nodes) ids.add(n.id);
     for (const e2 of clones.edges) ids.add(e2.id);

@@ -31,7 +31,7 @@
  *     `Challenge` (including hints/lesson, which the summary omits) plus the
  *     resulting `Topology`. Deliberately does NOT also push the topology into
  *     the live engine or `topologyStore` -- that stays the caller's job via
- *     the already-existing `simNew`/`setTopology` (`api/sim.ts`,
+ *     the already-existing `simNew`/`setTopology` (`state/simulation.svelte.ts`,
  *     `state/topology.svelte.ts`), so this command has one job (produce a
  *     starting point) instead of duplicating "load a design" logic that
  *     already exists elsewhere.
@@ -40,7 +40,7 @@
  * a `challenge_evaluate` round trip is a reasonable first guess: `evaluate()`
  * in `src/sim/challenge.ts` is pure arithmetic over a `Challenge` and a
  * `SimSnapshot`, and the frontend already holds both (the challenge from
- * `challengeStart`, the snapshot streamed by `sim://snapshot` at 10Hz via
+ * `challengeStart`, the snapshot produced by the in-process engine via
  * `simulationStore`) -- adding IPC for it would mean an extra round trip ten
  * times a second for a computation with no simulation state behind it. Same
  * reasoning as `$lib/components/cost/cost.ts` keeping `costDesign` in

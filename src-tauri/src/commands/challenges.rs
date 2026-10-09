@@ -43,9 +43,9 @@ pub struct ChallengeStart {
 }
 
 /// Resolve a challenge's preset and apply its judged load. Deliberately
-/// does NOT touch the live engine itself -- the frontend still calls
-/// `sim_new`/`sim_set_topology` with the returned topology, the same
-/// already-finished commands any other "load a design" path uses, so this
+/// does NOT touch the live engine itself -- the engine runs in the webview
+/// (`desktop/src/lib/sim/`), and the frontend loads the returned topology
+/// into it the same way any other "load a design" path does, so this
 /// command has exactly one job.
 #[tauri::command]
 pub fn challenge_start(id: String) -> AppResult<ChallengeStart> {

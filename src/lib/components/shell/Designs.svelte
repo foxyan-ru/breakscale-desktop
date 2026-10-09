@@ -349,7 +349,7 @@
 					onclick={doSave}
 					disabled={saving}
 				>
-					{saving ? 'Savingâ€¦' : 'Save'}
+					{saving ? 'Saving…' : 'Save'}
 				</button>
 			</div>
 
@@ -360,7 +360,7 @@
 					onclick={importFromFile}
 					disabled={fileBusy}
 				>
-					Open from fileâ€¦
+					Open from file…
 				</button>
 				<button
 					type="button"
@@ -368,7 +368,7 @@
 					onclick={exportToFile}
 					disabled={fileBusy}
 				>
-					Save to fileâ€¦
+					Save to file…
 				</button>
 			</div>
 
@@ -378,7 +378,7 @@
 
 			<div class="dz-body">
 				{#if loadingList}
-					<p class="dz-empty">Loading your designsâ€¦</p>
+					<p class="dz-empty">Loading your designs…</p>
 				{:else if listError}
 					<p class="dz-empty">
 						{listError}
@@ -416,7 +416,7 @@
 										<span class="dz-item-name">{d.name}</span>
 										<span class="dz-item-meta">
 											{openingId === d.id
-												? 'Openingâ€¦'
+												? 'Opening…'
 												: `${d.nodeCount} component${d.nodeCount === 1 ? '' : 's'}`}
 										</span>
 									</button>

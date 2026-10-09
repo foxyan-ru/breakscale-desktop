@@ -1,8 +1,8 @@
 //! Tauri command handlers, grouped by domain.
 //!
 //! Every function in this tree is a thin wrapper: it validates/resolves
-//! whatever is Tauri-specific (an `AppHandle`, a managed-state lock, a path
-//! under the app data directory), then calls straight into the domain
+//! whatever is Tauri-specific (an `AppHandle`, a path under the app data
+//! directory), then calls straight into the domain
 //! modules (`sim`, `persistence`, `sysdesign`, `vendors`) for the actual
 //! logic. No business logic belongs here -- see MIGRATION_PLAN.md #3.
 
@@ -12,7 +12,6 @@ pub mod designs;
 pub mod glossary;
 pub mod presets;
 pub mod settings;
-pub mod sim;
 pub mod sysdesign;
 pub mod vendors;
 
