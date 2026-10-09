@@ -1,55 +1,84 @@
 # Breakscale desktop
 
 A discrete-event system-design simulator, packaged as a Tauri 2 desktop
-application with a SvelteKit frontend and a Rust backend. This is a
-migration of the Breakscale web app; the full architecture rationale,
-module-by-module mapping and dependency justification live in the parent
-project's `MIGRATION_PLAN.md` (not part of this repository). This
-file covers what a maintainer actually needs day to day: setup, build,
-packaging, signing, and — since no build or test was run while producing
-this migration (see "Known limitations" below) — exactly what to verify
-before trusting it.
+application with a SvelteKit 2 + Svelte 5 frontend. This is a port of the
+Breakscale web app — the web app's source is the spec every feature is
+checked against.
+
+**The simulation engine runs in the webview, not in Rust.** Earlier
+releases (`desktop-v0.1.0` through `v0.2.2`) ran the engine in a Rust
+background thread and pushed snapshots to the frontend over Tauri
+IPC/events at ~10Hz; that turned out to be the actual source of reported UI
+lag and high CPU usage, since every tick paid a JSON-serialization round
+trip across the IPC boundary. `desktop-v0.3.0` moved the engine into the
+frontend as TypeScript — the same engine the web app runs, not a
+reimplementation of it — so there's no IPC in the simulation's hot path at
+all anymore. Rust/Tauri is now a thin native shell: window chrome, file
+dialogs, persistence, and a desktop-only system-design export feature (see
+below).
 
 ## Architecture overview
 
 ```
 ├── src/                      SvelteKit frontend, adapter-static, SSR off
-│   ├── routes/                 +layout.svelte, +page.svelte — the whole app is one page
+│   ├── routes/                 +layout.svelte, +page.svelte — the whole app is one page;
+│   │                           +page.svelte's onMount also starts the simulation loop
 │   └── lib/
-│       ├── domain/              TS types mirroring the Rust wire format (camelCase JSON both sides)
-│       ├── api/                  typed invoke() wrappers — the ONLY files that call @tauri-apps/api directly
-│       ├── state/                 Svelte 5 rune stores (simulation, topology, ui, settings, theme, sysdesign, vendor-sizes)
+│       ├── sim/                  THE SIMULATION ENGINE, in TypeScript — a direct, byte-for-byte
+│       │                         copy of the web app's own src/sim/*.ts (engine, behaviour/*,
+│       │                         types, presets, challenges, heap, random, annotations). Zero
+│       │                         React/DOM/Tauri dependency, so it ported with no translation.
+│       ├── state/                 Svelte 5 rune stores. simulation.svelte.ts owns the one live
+│       │                         Engine instance and a requestAnimationFrame loop, publishing
+│       │                         snapshots via $state.raw at 10Hz (see its own header comment —
+│       │                         there are real reference-identity gotchas, since the engine
+│       │                         reuses some internal containers across snapshots for
+│       │                         performance). topology.svelte.ts is the diagram's source of
+│       │                         truth and calls straight into the engine synchronously.
+│       ├── domain/              TS types mirroring the Rust wire format for what's STILL on IPC
+│       │                         (persistence, sysdesign, vendors) — camelCase JSON both sides.
+│       │                         sim-types.ts/annotations.ts are now thin re-exports of lib/sim's
+│       │                         own types, not a separate copy.
+│       ├── api/                  typed invoke() wrappers — the ONLY files that call
+│       │                         @tauri-apps/api directly. No simulation calls here anymore,
+│       │                         and no events at all (no more listen()) — only persistence,
+│       │                         dialogs, system-design export, and one-time static data
+│       │                         (presets/challenges/glossary/vendors).
 │       ├── theme/                 design tokens / contrast / applyTheme, ported from src/theme
 │       └── components/            one directory per panel: canvas, palette, inspector, metrics, cost,
 │                                  trace, vendor, glossary, challenges, sysdesign, shell (menus/dialogs)
-└── src-tauri/                 Rust backend
+└── src-tauri/                 Rust backend — a thin native shell, not where simulation runs
     ├── src/
-    │   ├── sim/                  the ported simulation engine: types, random, heap, engine, behaviour/*,
-    │   │                         challenge(s), presets, glossary — pure domain, no file I/O (see AGENTS.md's
-    │   │                         "no React, no DOM, no I/O" rule, which this module inherits)
+    │   ├── sim/                  DATA ONLY: types.rs (wire shapes), presets.rs, challenge(s).rs,
+    │   │                         glossary.rs. No engine, no behaviour/, no heap/random — those
+    │   │                         were removed in desktop-v0.3.0 along with the Rust tick thread.
     │   ├── vendors/                cloud vendor specs + cost/capacity-derivation arithmetic
+    │   │                         (cost.rs/derive.rs are currently dead code — the frontend has
+    │   │                         its own copy; a future cleanup, not done yet)
     │   ├── persistence/             design_file (.breakscale format), saved_designs (the named shelf), backup
-    │   ├── sysdesign/                NEW: high/low-level architecture model, derivation from a topology,
-    │   │                             validation, export (JSON/YAML/Markdown/Terraform)
-    │   ├── commands/                 thin #[tauri::command] wrappers, grouped by domain — no logic lives here
-    │   ├── state.rs                  the one live simulation Engine + its background tick thread
+    │   ├── sysdesign/                high/low-level architecture model, derivation from a topology,
+    │   │                             validation, export (JSON/YAML/Markdown/Terraform) — genuinely
+    │   │                             desktop-only (no upstream equivalent); stays in Rust because
+    │   │                             YAML export needs serde_yaml and Terraform export needs real
+    │   │                             filesystem writes, neither available to a browser tab
+    │   ├── commands/                 thin #[tauri::command] wrappers, grouped by domain — no logic lives here.
+    │   │                             26 commands total; there is no commands/sim.rs anymore.
     │   └── error.rs                  AppError → the JSON shape every command rejection carries
     └── data/                      presets, glossary and vendor specs as JSON, embedded via include_str!
 ```
-
-**Why the simulation runs in Rust, not the WebView.** The engine ticks on a
-fixed interval and polls at 10Hz regardless of what the UI is doing; a
-background OS thread owns the one live `Engine` (behind
-`Arc<Mutex<Option<Engine>>>`) and pushes `sim://snapshot` events to the
-frontend, so the simulation keeps advancing even while the webview is
-mid-reflow, and the UI thread is never blocked waiting on it. See
-`src-tauri/src/state.rs`.
 
 **Why the design-file format is unchanged.** Every Rust struct that
 crosses the Tauri IPC boundary or gets written to a `.breakscale` file is
 `#[serde(rename_all = "camelCase")]`, matching the web app's JSON
 field-for-field. A `.breakscale` file saved by either app opens in the
-other — see the parent project's MIGRATION_PLAN §6.
+other.
+
+**Known persistence gaps** (real bugs, not new in this architecture
+change): settings and window layout don't survive a relaunch (the
+`settings_load`/`settings_save`/`layout_load`/`layout_save` commands exist
+but nothing calls them yet); saved system-designs can't be reopened from
+the UI and every save overwrites the same file; backups aren't compatible
+with the web app's `localStorage`-keyed format.
 
 ## Prerequisites
 
@@ -185,71 +214,42 @@ public distribution.
 
 ## Known limitations & manual verification steps
 
-**No build, install, or execution command was run while producing this
-migration** (an explicit constraint on the work, not an oversight) — every
-file was written and statically reviewed, never compiled. Treat this as a
-complete first draft awaiting its first `cargo check` / `bun run tauri
-dev`, not as a verified build. In the order you should check them:
+The app builds, runs, and is CI-verified (`bun run check`/`test` on Ubuntu,
+`cargo test` on Windows) on every push — this section is real, current
+limitations, not a first-draft disclaimer.
 
-1. **`cargo check` inside `src-tauri/`, then `bun run tauri dev`.** Fix
-   whatever the compiler and `svelte-check` find first — many independent
-   agents wrote against a shared written contract without being able to
-   see each other's final code, so naming or minor signature drift between
-   a Rust command and its frontend caller is the most likely class of
-   first error. Search the frontend for `NOTE(integration)`/
-   `TODO(integration)` comments first; several were left deliberately
-   where an agent invented a command contract for the integration pass to
-   implement, and most already have a matching Rust command in
-   `src-tauri/src/commands/` — cross-check spelling/argument names between
-   the two sides if a call fails.
-2. **Determinism of the simulation engine.** `src-tauri/src/sim/random.rs`
-   (the seeded RNG) and `src-tauri/src/sim/engine.rs` (the event loop) were
-   ported operation-for-operation from the TypeScript originals, but
-   nothing in this session could confirm they produce byte-identical
-   output for the same seed and topology — the property the web app's own
-   `AGENTS.md` treats as a hard contract. Add a cross-language fixture
-   (fixed seed, N ticks, compare `snapshot().system`) before trusting
-    replay parity. See the parent project's MIGRATION_PLAN §9.
-3. **Canvas interaction fidelity.** `src/lib/components/canvas/Canvas.svelte`
-   reimplements the web app's hand-rolled SVG hit-testing/gesture system
-   using Svelte's own event model rather than transliterating the original
-   React-specific pointer-capture workarounds. Functional but at reduced
-   fidelity in several places the porting agent documented inline and in
-   its own report — worth a manual pass with a mouse, a trackpad, and (if
-   available) a touchscreen: node placement/drag, edge wiring, pan/zoom,
-   multi-select/marquee-select/clipboard/rename (implemented in a later
-   pass — see "What is NOT ported" below for what of this area is still
-   actually missing), annotation resize (corner/font-scale handles not
-   implemented, side handles are), and the minimap's click-to-jump.
-4. **Data fidelity of the 23 presets and 100 glossary entries.** Converted
-   mechanically from the TS literals to JSON and spot-checked
-   programmatically (node/edge referential integrity, required-field
-   presence, field-count diffs against the source's own field list) rather
-   than diffed value-by-value against `src/sim/presets.ts`. Low risk, not
-   zero — worth a value-level diff before shipping if a preset's exact
-   tuned numbers matter to a downstream test or challenge.
+1. **Settings/layout persistence is wired but not yet consumed.**
+   `settings_load`/`settings_save`/`layout_load`/`layout_save` commands
+   exist (`src-tauri/src/commands/settings.rs`), but nothing on the
+   frontend calls them on startup/change yet — the preference store works
+   in-memory for the lifetime of one session but does not survive a
+   restart.
+2. **Saved system-designs can't be reopened**, and every save overwrites
+   the same file (`sysdesignStore.load()` is never called from the UI;
+   every document is created with a hardcoded `id: "unsaved"`).
+3. **Backups aren't compatible with the web app.** Desktop keys backup
+   data by file name (`saved_designs.json`, …); the web app keys the same
+   data by `localStorage` key (`breakscale.designs.v1`, …) — a backup made
+   by one won't restore on the other, and neither backs up a "session" the
+   way the web app does (so desktop always boots the first preset, never
+   "where you left off").
+4. **`vendors/cost.rs` and `vendors/derive.rs` (Rust) are dead code** — the
+   frontend (`VendorPanel.svelte`, `components/cost/cost.ts`) has its own
+   copy of the same vendor-size → capacity arithmetic. Harmless (both
+   copies are kept in sync by virtue of neither changing independently
+   yet) but worth collapsing to one, ideally by deleting the Rust side in
+   favor of upstream's own `src/content/vendors/*.ts`.
 5. **App icons are placeholder art.** The checked-in set was generated from
-   `static/favicon.svg` and is valid for bundling, but it is the favicon
-   scaled up rather than a dedicated 1024×1024 app icon — re-run
+   `static/favicon.svg` — valid for bundling, but it's the favicon scaled
+   up rather than a dedicated 1024×1024 app icon. Re-run
    `bun x @tauri-apps/cli icon <source.png>` with proper art before a
    public release (see "Setup" above).
-6. **Vendor size → engine-capacity derivation UI.** `VendorPanel.svelte`
-   inlines the `deriveFromSize`/`isSizedKind` arithmetic directly (a port
-   of `src/content/vendors/derive.ts`) rather than calling into the Rust
-   `vendors::derive` module, which exists but has no command wrapping it
-   yet — both copies of this logic must be kept in sync if either changes;
-   consider collapsing to one by adding a `vendors_derive_capacity`
-   command and switching the frontend to call it.
-7. **Settings/layout persistence is wired but not yet consumed.**
-   `settings_load`/`settings_save`/`layout_load`/`layout_save` commands
-   exist (`src-tauri/src/commands/settings.rs`), but
-   `src/lib/state/settings.svelte.ts` still has its original
-   `TODO(integration)` comment for actually calling them on startup/change
-   — the preference store works in-memory for the lifetime of one session
-   but does not yet survive a restart. A small follow-up: call
-   `settings_load` in the root layout's `onMount` and `settings_save`
-   whenever `settingsStore` changes (e.g. via a `$effect`).
-8. **Design compatibility edge case.** `NodeConfig`'s six fleet-sizing
+6. **Installer version strings read `0.1.0`.** `package.json` and
+   `src-tauri/tauri.conf.json`'s `version` field were never bumped to
+   track the `desktop-v*` release tags — cosmetic only (the installers and
+   their embedded binaries are correct for the release they ship with),
+   but worth fixing before this matters to anyone checking "Help → About".
+7. **Design compatibility edge case.** `NodeConfig`'s six fleet-sizing
    fields (`replicaCount`, `replicationLagMs`, `readFraction`,
    `shardCount`, `shardCapacity`, `hotKeyFraction`) are non-optional in the
    Rust struct, matching the TS interface's own declared shape — but the
@@ -258,18 +258,30 @@ dev`, not as a verified build. In the order you should check them:
    saved before those fields existed, or hand-edited to omit them, will
    open in the web app but be rejected by this app's stricter
    `serde`-derived parser. Low practical risk (every preset/saved-design
-   path in this codebase always includes them), flagged for completeness
-   — see `persistence::design_file`'s module doc for the full note.
+   path in this codebase always includes them) — see
+   `persistence::design_file`'s module doc for the full note.
 
-## What is NOT ported (out of scope for this migration)
+## What is NOT ported
 
-- Alt-drag-duplicate and Ctrl+D duplicate on the canvas (multi-select,
-  marquee-select, node rename and system clipboard copy/cut/paste ARE
-  implemented — see `Canvas.svelte`'s header and closing comments).
-- Group-drag-move of a multi-selection: dragging one member of a
-  multi-selection selects and moves only that one node.
-- Undo/redo and zoom-to-fit on the canvas.
-- The annotation text editor's bold/italic/underline/font/tone toolbar.
-- Pixel-identical edge-label collision avoidance at a symmetric fan-out.
+Confirmed, as of `desktop-v0.3.0`, by diffing this repo's components against
+upstream's `src/components/*.tsx` — these are real gaps, not desktop-only
+extras, and none of them block the app from running:
 
-Each is a self-contained follow-up; none blocks the app from running.
+- **`PanelResizer`** — upstream lets you drag-resize the side panels; fixed
+  widths here.
+- **Share links** (`Share.tsx`/`share.ts`/`share/wire.ts`) — generating a
+  shareable URL encoding a topology. Not applicable 1:1 to a desktop app
+  (no URL to share), but the underlying encode/decode isn't ported either.
+- **`imageExport.ts`** — exporting the canvas as a PNG/SVG image.
+- **`useCoarsePointer`/`presence.ts`** — upstream's touch/coarse-pointer
+  affordances and multi-cursor presence indicators.
+- **`useGithubStars`** — a GitHub star-count badge; cosmetic, web-only.
+- **Session restore** (`breakscale.session.v1`) — the web app restores
+  "where you left off" across a browser reload; desktop always boots the
+  first preset (see "Known limitations" above — also entangled with the
+  backup-format gap).
+
+Everything else in upstream's component tree (undo/redo, zoom-to-fit,
+multi-select/marquee/clipboard, the annotation format toolbar, right-click
+node select, group-drag, the bulkhead/autoscaler/region control-plane
+nodes, etc.) is ported and in use.
